@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { 
-  formatCodeWithLineNumbers, 
-  findElements, 
-  buildCodeSummary,
-  extractLineNumbersFromResponse,
-  validateLineNumbers 
-} from "@/app/utils/codeProcessor";
+// import { 
+//   formatCodeWithLineNumbers, 
+//   findElements, 
+//   buildCodeSummary,
+//   extractLineNumbersFromResponse,
+//   validateLineNumbers 
+// } from "@/app/utils/codeProcessor";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
@@ -117,8 +117,8 @@ The student has previously discussed:`;
     let formattedCode = "";
     
     if (code) {
-      formattedCode = formatCodeWithLineNumbers(code);
-      codeSummary = buildCodeSummary(code, language || "javascript");
+      // formattedCode = formatCodeWithLineNumbers(code);
+      // codeSummary = buildCodeSummary(code, language || "javascript");
     }
 
     // System prompt for the coding assistant
@@ -432,18 +432,17 @@ CRITICAL: The line numbers above are 100% accurate. Use them EXACTLY as shown!` 
         { status: 500 }
       );
     }
-
     // Validate line numbers in AI response if code was provided
-    if (code && aiMessage) {
-      const mentionedLines = extractLineNumbersFromResponse(aiMessage);
-      if (mentionedLines.length > 0) {
-        const { invalid } = validateLineNumbers(code, mentionedLines);
-        if (invalid.length > 0) {
-          console.warn("AI mentioned invalid line numbers:", invalid);
-          // Could add correction logic here in the future
-        }
-      }
-    }
+    // if (code && aiMessage) {
+    //   const mentionedLines = extractLineNumbersFromResponse(aiMessage);
+    //   if (mentionedLines.length > 0) {
+    //     const { invalid } = validateLineNumbers(code, mentionedLines);
+    //     if (invalid.length > 0) {
+    //       console.warn("AI mentioned invalid line numbers:", invalid);
+    //       // Could add correction logic here in the future
+    //     }
+    //   }
+    // }
 
     // Add relevant resources based on language or topic
     let enhancedMessage = aiMessage;

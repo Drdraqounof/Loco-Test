@@ -1,0 +1,61 @@
+import { useEffect, useRef, useState } from "react";
+
+export function useAudioPlayer() {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [audioData, setAudioData] = useState<string | null>(null);
+  const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handlePlay = () => setIsPlayingAudio(true);
+    const handleEnded = () => setIsPlayingAudio(false);
+    const handlePause = () => setIsPlayingAudio(false);
+    const handleError = () => setIsPlayingAudio(false);
+
+    audio.addEventListener("play", handlePlay);
+    audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("error", handleError);
+
+    return () => {
+      audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("error", handleError);
+    };
+  }, []);
+
+  const playAudio = (base64Audio: string) => {
+    const audioUrl = `data:audio/mp3;base64,${base64Audio}`;
+    setAudioData(audioUrl);
+    if (audioRef.current) {
+      audioRef.current.src = audioUrl;
+      audioRef.current.play().catch((err) => console.error("Autoplay failed:", err));
+    }
+  };
+
+  const replayAudio = () => {
+    if (audioRef.current && audioData) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch((err) => console.error("Replay failed:", err));
+    }
+  };
+
+  const stopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  };
+
+  return {
+    audioRef,
+    audioData,
+    isPlayingAudio,
+    playAudio,
+    replayAudio,
+    stopAudio,
+  };
+}
