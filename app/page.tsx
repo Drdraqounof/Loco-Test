@@ -132,6 +132,27 @@ export default function Home() {
     prevListeningRef.current = listening;
   }, [listening, userMessage, loading]);
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Space = Start/stop recording
+      if (e.code === "Space" && !inputRef.current?.matches(":focus")) {
+        e.preventDefault();
+        toggleListening();
+      }
+      
+      // P = Pause/resume speech
+      if ((e.key.toLowerCase() === "p" || e.code === "KeyP") && !inputRef.current?.matches(":focus")) {
+        if (window.speechSynthesis?.speaking) {
+          handleTogglePause();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [listening]);
+
   const handleSendMessage = async () => {
     if (!userMessage.trim()) return;
     setLoading(true);
@@ -605,6 +626,25 @@ export default function Home() {
           {autoPlayAudio && <span>🔊 Auto-play enabled</span>}
           {listening && <span style={{ color: theme.accentColor }}>🎤 Listening...</span>}
         </div>
+
+        {/* Keyboard Shortcuts Hints */}
+        {typeof window !== 'undefined' && (
+          <div style={{ 
+            fontSize: "11px", 
+            color: theme.textColor, 
+            opacity: 0.5,
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            borderLeft: `1px solid ${theme.borderColor}30`,
+            paddingLeft: "12px"
+          }}>
+            <span title="Press Space to start/stop recording">⌨️ Space: Record</span>
+            {window.speechSynthesis?.speaking && (
+              <span title="Press P to pause/resume speech">⌨️ P: Pause</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Content Area */}

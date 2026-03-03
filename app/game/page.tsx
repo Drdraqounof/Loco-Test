@@ -21,6 +21,23 @@ export default function GamePage() {
     gameOver: false,
     winner: null,
   });
+  const [popupShownCount, setPopupShownCount] = useState(0);
+
+  // Track when game over state changes and reset popup counter
+  useEffect(() => {
+    if (gameState.gameOver && gameState.winner) {
+      // Only increment if popup hasn't been shown for this game over state
+      setPopupShownCount(prev => {
+        if (prev === 0) {
+          return 1;
+        }
+        return prev;
+      });
+    } else if (!gameState.gameOver) {
+      // Reset popup counter when starting a new game
+      setPopupShownCount(0);
+    }
+  }, [gameState.gameOver, gameState.winner]);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -252,7 +269,9 @@ export default function GamePage() {
         />
 
         {/* Game Over Overlay */}
-        {gameState.gameOver && (
+        {gameState.gameOver && 
+         gameState.winner !== null && 
+         popupShownCount > 0 && (
           <div
             style={{
               position: "absolute",
