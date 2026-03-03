@@ -32,7 +32,19 @@ export function useAudioPlayer() {
     setAudioData(audioUrl);
     if (audioRef.current) {
       audioRef.current.src = audioUrl;
-      audioRef.current.play().catch((err) => console.error("Autoplay failed:", err));
+      audioRef.current.currentTime = 0;
+      const playPromise = audioRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            console.log("Audio playing successfully");
+            setIsPlayingAudio(true);
+          })
+          .catch((err) => {
+            console.error("Audio playback failed:", err);
+            setIsPlayingAudio(false);
+          });
+      }
     }
   };
 

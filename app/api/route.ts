@@ -8,6 +8,9 @@ import {
 } from "@/utils/codeProcessor";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const AI_PROVIDER = process.env.AI_PROVIDER || "openai";
+const TTS_PROVIDER = process.env.TTS_PROVIDER || "openai";
 
 // Resource library with actual links
 const RESOURCES = {
@@ -157,41 +160,41 @@ Provide explanations and teaching
 Answer coding questions
 Suggest best practices
 
+CRITICAL RULE - PROVIDE CODE IN MARKDOWN CODE BLOCKS:
+When generating code, ALWAYS use triple backticks with the language identifier
+Example: \`\`\`tsx or \`\`\`javascript or \`\`\`python
+Put your complete code inside these code blocks
+Example format:
+\`\`\`tsx
+// Your code here
+export default function Home() {
+  return <div>Hello</div>
+}
+\`\`\`
+
+In your chat message, briefly explain what the code does but don't repeat it
+Say: "Here's the homepage component" then provide the code in a code block below
+The code blocks will be extracted and shown in the terminal panel automatically
+
 WHEN USER ASKS FOR CODE GENERATION:
-1. If the request is ambiguous, ASK CLARIFYING QUESTIONS first:
-   What programming language? (JavaScript, Python, TypeScript, etc.)
-   What framework? (React, Vue, Django, Flask, etc.) if applicable
-   What are the key features/requirements?
-   Any specific constraints or preferences?
-2. Briefly explain your approach in the chat
-3. DO NOT show code in the chat message itself
-4. Instead, say: Replace [filename] with the code shown in the terminal
-5. Provide all actual code ONLY in code blocks
+1. If the request is ambiguous, ASK CLARIFYING QUESTIONS
+2. Briefly explain your approach in 1-2 sentences
+3. Provide the code in a markdown code block with proper language identifier
+4. Mention where to use the code (filename/location)
 
-CRITICAL RULE - DO NOT PUT CODE BLOCKS IN CHAT:
-Never use backticks or code blocks in the chat response
-Never show any code snippets in the message text
-Only mention file names and say use the code shown in the terminal
-The code blocks are extracted separately and shown on the right
-Keep chat purely for instructions and explanations
+HELPFUL TIPS:
+Always include complete, working code - not snippets
+Include all necessary imports
+Use proper formatting and indentation
+Add comments for complex logic
+Make code production-ready
 
-CHAT FORMAT EXAMPLE:
-Good: Create a new file called game.js and use the code shown in the terminal. Then run $ npm start.
-Bad: Here is the code with backticks and code blocks
+Terminal commands should still use $ prefix:
+$ npm install
+$ npm run dev
 
-Terminal commands should still be prefixed with $ (e.g., $ npm install)
-Format terminal sections like this:
-Code Output
-bash
-$ command1
-$ command2
-output here
+Remember: Chat is for explanation, code blocks are for actual code!`;
 
-Do NOT use markdown symbols like # or - in your response
-Keep chat messages clean with only text and explanations
-Tell users to use the code in the terminal instead of showing code
-
-Remember: Code blocks are shown separately on the right. Your chat is ONLY for instructions!`;
 
     const apiMessages: Message[] = [
       { role: "system", content: systemPrompt },
@@ -234,25 +237,79 @@ Remember: Code blocks are shown separately on the right. Your chat is ONLY for i
       );
     }
 
-    // If audio is requested, call OpenAI TTS API
-    if (voice && aiMessage) {
+    // If audio is requested, call TTS API based on provider
+    // Skip server-side TTS if using browser Web Speech API
+    if (voice && aiMessage && TTS_PROVIDER !== "browser") {
       try {
-        const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: "tts-1",
-            input: aiMessage,
-            voice,
-            response_format: "base64",
-          }),
-        });
-        if (ttsResponse.ok) {
-          const ttsData = await ttsResponse.json();
-          audioBase64 = ttsData.audio;
+        if (TTS_PROVIDER === "gemini") {
+          // Use Google Text-to-Speech API
+          if (!GEMINI_API_KEY) {
+            console.error("Gemini API key not configured for TTS");
+          } else {
+            // Map voice names to Google's neural voices
+            const voiceMap: { [key: string]: string } = {
+              alloy: "en-US-Neural2-A",
+              echo: "en-US-Neural2-C",
+              fable: "en-US-Neural2-E",
+            };
+            const googleVoiceName = voiceMap[voice] || "en-US-Neural2-C";
+
+            const ttsResponse = await fetch(
+              `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GEMINI_API_KEY}`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  input: { text: aiMessage },
+                  voice: {
+                    languageCode: "en-US",
+                    name: googleVoiceName,
+                  },
+                  audioConfig: {
+                    audioEncoding: "MP3",
+                    pitch: 0,
+                    speakingRate: 1.0,
+                  },
+                }),
+              }
+            );
+            if (ttsResponse.ok) {
+              const ttsData = await ttsResponse.json();
+              if (ttsData.audioContent) {
+                audioBase64 = ttsData.audioContent;
+                console.log("Google TTS audio generated successfully");
+              } else {
+                console.error("No audio content in response:", ttsData);
+              }
+            } else {
+              const errorData = await ttsResponse.text();
+              console.error("Google TTS error:", ttsResponse.status, errorData);
+            }
+          }
+        } else {
+          // Default to OpenAI TTS
+          const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "tts-1",
+              input: aiMessage,
+              voice: voice,
+              response_format: "mp3",
+            }),
+          });
+          if (ttsResponse.ok) {
+            const audioBuffer = await ttsResponse.arrayBuffer();
+            const base64Audio = Buffer.from(audioBuffer).toString("base64");
+            audioBase64 = base64Audio;
+          } else {
+            console.error("OpenAI TTS API error:", ttsResponse.status, ttsResponse.statusText);
+          }
         }
       } catch (e) {
         console.error("TTS error", e);

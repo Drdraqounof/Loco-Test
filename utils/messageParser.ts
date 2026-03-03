@@ -15,16 +15,26 @@ export function extractMultipleCodeBlocks(
 ): Array<{ language: string; code: string }> {
   const blocks: Array<{ language: string; code: string }> = [];
   
-  // Support both ``` and ~~~ fences
-  const codeBlockRegex =
-    /```+([^\n`]*)\n?([\s\S]*?)```+|~~~+([^\n~]*)\n?([\s\S]*?)~~~+/g;
-  
+  // Support ``` fences
+  const backtickRegex = /```([^`\n]*)\n([\s\S]*?)```/g;
   let match;
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    const language = (match[1] || match[3] || "").trim() || "javascript";
-    const code = (match[2] || match[4] || "").trim();
+  
+  while ((match = backtickRegex.exec(text)) !== null) {
+    const language = (match[1] || "").trim() || "javascript";
+    const code = (match[2] || "").trim();
     
-    if (code) {
+    if (code && code.length > 0) {
+      blocks.push({ language, code });
+    }
+  }
+  
+  // Also support ~~~ fences
+  const tildeRegex = /~~~([^~\n]*)\n([\s\S]*?)~~~/g;
+  while ((match = tildeRegex.exec(text)) !== null) {
+    const language = (match[1] || "").trim() || "javascript";
+    const code = (match[2] || "").trim();
+    
+    if (code && code.length > 0) {
       blocks.push({ language, code });
     }
   }
@@ -51,10 +61,20 @@ export function extractTerminalCommands(text: string): string[] {
  * Strip code blocks from text for display
  */
 export function stripCodeFromResponse(text: string): string {
-  return text
+  let cleaned = text
     .replace(/```[\w-]*\n?[\s\S]*?```/g, "")
-    .replace(/~~~[\w-]*\n?[\s\S]*?~~~/g, "")
-    .trim();
+    .replace(/~~~[\w-]*\n?[\s\S]*?~~~/g, "");
+  
+  // Remove decorative UI text that the AI sometimes includes
+  cleaned = cleaned
+    .replace(/^Code Output\s*$/gm, "")
+    .replace(/^✕\s*$/gm, "")
+    .replace(/^Commands\s*$/gm, "")
+    .replace(/^Code Output\n/gm, "")
+    .replace(/^Commands\n/gm, "")
+    .replace(/✕\n/g, "");
+  
+  return cleaned.trim();
 }
 
 /**
