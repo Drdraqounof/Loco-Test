@@ -12,6 +12,9 @@ import { callAIAPI } from "@/tools/hooks/utils/apiClient";
 
 export default function Home() {
   const router = useRouter();
+  const [showStartScreen, setShowStartScreen] = useState(true);
+  const [startScreenPhase, setStartScreenPhase] = useState<'intro' | 'eyes' | 'fadeout'>('intro');
+  const [eyePosition, setEyePosition] = useState({ x: 0, y: 0 });
   const [voice, setVoice] = useState<VoiceKey>("echo");
   const [loading, setLoading] = useState(false);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -27,6 +30,7 @@ export default function Home() {
   const [enablePingPong, setEnablePingPong] = useState(true);
   const [enableChess, setEnableChess] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
+  
   const allPrompts: Array<{ emoji: string; text: string }> = [
     { 
       emoji: "📝", 
@@ -70,12 +74,81 @@ export default function Home() {
     }
   ];
   
-  const { listening, label, speechSupported, userMessage, setUserMessage, toggleListening } = useSpeechRecognition();
+  const { listening, label, speechSupported, userMessage, setUserMessage, toggleListening, isWhisperActive } = useSpeechRecognition();
   const { audioRef, playAudio, isPlayingAudio } = useAudioPlayer();
   const theme = VOICE_THEMES[voice];
   const prevListeningRef = useRef(listening);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Start screen animation logic
+  useEffect(() => {
+    // Check if user has seen the start screen before
+    const hasSeenStartScreen = localStorage.getItem('hasSeenStartScreen');
+    
+    if (hasSeenStartScreen === 'true') {
+      setShowStartScreen(false);
+      return;
+    }
+
+    // Phase 1: Show intro text
+    const introTimer = setTimeout(() => {
+      setStartScreenPhase('eyes');
+    }, 1500);
+
+    // Phase 2: Animate eyes looking around
+    const eyesTimer = setTimeout(() => {
+      setStartScreenPhase('fadeout');
+    }, 4500);
+
+    // Phase 3: Fade out and show main app
+    const fadeoutTimer = setTimeout(() => {
+      setShowStartScreen(false);
+      localStorage.setItem('hasSeenStartScreen', 'true');
+    }, 5500);
+
+    return () => {
+      clearTimeout(introTimer);
+      clearTimeout(eyesTimer);
+      clearTimeout(fadeoutTimer);
+    };
+  }, []);
+
+  // Eye movement animation
+  useEffect(() => {
+    if (startScreenPhase !== 'eyes') return;
+
+    const positions = [
+      { x: -20, y: 0 },   // Look left
+      { x: 0, y: 0 },     // Center
+      { x: 20, y: 0 },    // Look right
+      { x: 0, y: 0 },     // Center
+      { x: -20, y: 0 },   // Look left again
+      { x: 20, y: 0 },    // Look right again
+      { x: 0, y: -12 },   // Look up
+      { x: 0, y: 0 },     // Center
+      { x: -15, y: -8 },  // Look up-left
+      { x: 15, y: -8 },   // Look up-right
+      { x: 0, y: 0 },     // Center
+    ];
+
+    let currentIndex = 0;
+
+    const interval = setInterval(() => {
+      setEyePosition(positions[currentIndex]);
+      currentIndex = (currentIndex + 1) % positions.length;
+    }, 450);
+
+    return () => clearInterval(interval);
+  }, [startScreenPhase]);
+
+  const skipStartScreen = () => {
+    setStartScreenPhase('fadeout');
+    setTimeout(() => {
+      setShowStartScreen(false);
+      localStorage.setItem('hasSeenStartScreen', 'true');
+    }, 500);
+  };
 
   // Function to strip URLs and links from text for speech (prevents reading links aloud)
   const stripUrlsFromText = (text: string): string => {
@@ -107,6 +180,17 @@ export default function Home() {
     setIsMounted(true);
   }, []);
 
+  // Save conversation history to localStorage whenever it changes
+  useEffect(() => {
+    if (isMounted && conversationHistory.length > 0) {
+      try {
+        localStorage.setItem("conversationHistory", JSON.stringify(conversationHistory));
+      } catch (error) {
+        console.error("Failed to save conversation history:", error);
+      }
+    }
+  }, [conversationHistory, isMounted]);
+
   useEffect(() => {
     // Initialize Speech Synthesis voices and shuffle prompts on mount
     if (window.speechSynthesis) {
@@ -122,6 +206,19 @@ export default function Home() {
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
+    
+    // Load conversation history from localStorage
+    try {
+      const savedHistory = localStorage.getItem("conversationHistory");
+      if (savedHistory) {
+        const parsedHistory = JSON.parse(savedHistory);
+        if (Array.isArray(parsedHistory) && parsedHistory.length > 0) {
+          setConversationHistory(parsedHistory);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to load conversation history:", error);
+    }
     
     setVoice(savedVoice);
     setAutoPlayAudio(savedAutoPlay);
@@ -238,8 +335,7 @@ export default function Home() {
   };
 
   const handleUndoMessage = () => {
-    if (conversationHistory.length < 2) return; // Need at least user message and AI response
-    // Remove last AI response and last user message
+    if (conversationHistory.length < 2) return;
     const newHistory = conversationHistory.slice(0, -2);
     setConversationHistory(newHistory);
     if (window.speechSynthesis) {
@@ -251,6 +347,11 @@ export default function Home() {
 
   const handleClearChat = () => {
     setConversationHistory([]);
+    try {
+      localStorage.removeItem("conversationHistory");
+    } catch (error) {
+      console.error("Failed to clear conversation history:", error);
+    }
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
       setIsSpeechPaused(false);
@@ -273,7 +374,6 @@ export default function Home() {
 
   const handleReplayAudio = () => {
     if (lastAudioBase64 === "browser-tts") {
-      // Replay using Web Speech API
       const lastMessage = conversationHistory.length > 0 ? conversationHistory[conversationHistory.length - 1]?.content : "";
       if (lastMessage && window.speechSynthesis) {
         window.speechSynthesis.cancel();
@@ -295,11 +395,273 @@ export default function Home() {
         setIsSpeechPaused(false);
       }
     } else {
-      // Replay using audio file
       playAudio(lastAudioBase64!);
     }
   };
 
+  // Start Screen Component
+  if (showStartScreen) {
+    return (
+      <div style={{
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "linear-gradient(135deg, #0a0e27 0%, #1a1f3a 50%, #0a0e27 100%)",
+        fontFamily: "'Inter', sans-serif",
+        position: "relative",
+        overflow: "hidden",
+        opacity: startScreenPhase === 'fadeout' ? 0 : 1,
+        transition: "opacity 1s ease"
+      }}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+          
+          @keyframes float {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-20px); }
+          }
+          
+          @keyframes glow {
+            0%, 100% { 
+              box-shadow: 0 0 30px rgba(147, 51, 234, 0.4), 
+                          0 0 60px rgba(147, 51, 234, 0.2),
+                          inset 0 0 20px rgba(147, 51, 234, 0.1); 
+            }
+            50% { 
+              box-shadow: 0 0 50px rgba(147, 51, 234, 0.6), 
+                          0 0 100px rgba(147, 51, 234, 0.3),
+                          inset 0 0 30px rgba(147, 51, 234, 0.2); 
+            }
+          }
+          
+          @keyframes blink {
+            0%, 90%, 100% { transform: scaleY(1); }
+            95% { transform: scaleY(0.1); }
+          }
+          
+          @keyframes textGlow {
+            0%, 100% { text-shadow: 0 0 20px rgba(147, 51, 234, 0.6); }
+            50% { text-shadow: 0 0 40px rgba(147, 51, 234, 0.9), 0 0 60px rgba(147, 51, 234, 0.6); }
+          }
+          
+          .particle {
+            position: absolute;
+            width: 3px;
+            height: 3px;
+            background: rgba(147, 51, 234, 0.6);
+            border-radius: 50%;
+            pointer-events: none;
+          }
+        `}</style>
+
+        {/* Animated background particles */}
+        {[...Array(40)].map((_, i) => {
+          // Use deterministic values based on index to avoid hydration mismatch
+          const seed1 = ((i * 17 + 13) % 100);
+          const seed2 = ((i * 23 + 7) % 100);
+          const seed3 = ((i * 31 + 11) % 40) / 10 + 3; // 3-7s
+          const seed4 = ((i * 37 + 3) % 20) / 10; // 0-2s
+          const seed5 = ((i * 41 + 5) % 60) / 100 + 0.2; // 0.2-0.8
+          return (
+            <div
+              key={i}
+              className="particle"
+              style={{
+                left: `${seed1}%`,
+                top: `${seed2}%`,
+                animation: `float ${seed3}s ease-in-out infinite`,
+                animationDelay: `${seed4}s`,
+                opacity: seed5
+              }}
+            />
+          );
+        })}
+
+        {/* Main content */}
+        <div style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: "50px",
+          zIndex: 10
+        }}>
+          {/* Eyes Container - Simple Purple Ovals */}
+          {startScreenPhase !== 'intro' && (
+            <div style={{
+              display: "flex",
+              gap: "80px",
+              alignItems: "center",
+              animation: "float 3s ease-in-out infinite"
+            }}>
+              {/* Left Eye - Simple Purple Oval */}
+              <div style={{
+                width: "100px",
+                height: "160px",
+                background: "linear-gradient(135deg, #9333ea 0%, #7c3aed 50%, #6d28d9 100%)",
+                borderRadius: "50%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                animation: "glow 2s ease-in-out infinite, blink 4s ease-in-out infinite",
+                position: "relative",
+                transform: `translate(${eyePosition.x}px, ${eyePosition.y}px)`,
+                transition: "transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
+                boxShadow: "0 0 40px rgba(147, 51, 234, 0.5), inset 0 0 30px rgba(255, 255, 255, 0.1)"
+              }}>
+                {/* White highlight */}
+                <div style={{
+                  position: "absolute",
+                  top: "20%",
+                  left: "30%",
+                  width: "25px",
+                  height: "35px",
+                  background: "rgba(255, 255, 255, 0.4)",
+                  borderRadius: "50%",
+                  filter: "blur(8px)"
+                }} />
+              </div>
+
+              {/* Right Eye - Simple Purple Oval */}
+              <div style={{
+                width: "100px",
+                height: "160px",
+                background: "linear-gradient(135deg, #9333ea 0%, #7c3aed 50%, #6d28d9 100%)",
+                borderRadius: "50%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                animation: "glow 2s ease-in-out infinite, blink 4s ease-in-out infinite",
+                animationDelay: "0.1s",
+                position: "relative",
+                transform: `translate(${eyePosition.x}px, ${eyePosition.y}px)`,
+                transition: "transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)",
+                boxShadow: "0 0 40px rgba(147, 51, 234, 0.5), inset 0 0 30px rgba(255, 255, 255, 0.1)"
+              }}>
+                {/* White highlight */}
+                <div style={{
+                  position: "absolute",
+                  top: "20%",
+                  left: "30%",
+                  width: "25px",
+                  height: "35px",
+                  background: "rgba(255, 255, 255, 0.4)",
+                  borderRadius: "50%",
+                  filter: "blur(8px)"
+                }} />
+              </div>
+            </div>
+          )}
+
+          {/* Text */}
+          <div style={{
+            textAlign: "center",
+            marginTop: startScreenPhase === 'intro' ? "0" : "30px"
+          }}>
+            <h1 style={{
+              fontSize: startScreenPhase === 'intro' ? "72px" : "56px",
+              fontWeight: 900,
+              background: "linear-gradient(135deg, #a855f7 0%, #9333ea 50%, #7c3aed 100%)",
+              WebkitBackgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              backgroundClip: "text",
+              marginBottom: "16px",
+              letterSpacing: "-0.02em",
+              animation: "textGlow 2s ease-in-out infinite",
+              transition: "font-size 0.5s ease"
+            }}>
+              Loco
+            </h1>
+            
+            {startScreenPhase !== 'intro' && (
+              <p style={{
+                fontSize: "18px",
+                color: "rgba(168, 85, 247, 0.8)",
+                fontWeight: 400,
+                letterSpacing: "0.05em",
+                animation: "fadeIn 1s ease"
+              }}>
+                Your AI Assistant is waking up...
+              </p>
+            )}
+          </div>
+
+          {/* Skip button */}
+          {startScreenPhase === 'eyes' && (
+            <button
+              onClick={skipStartScreen}
+              style={{
+                marginTop: "40px",
+                padding: "12px 32px",
+                background: "rgba(147, 51, 234, 0.15)",
+                border: "2px solid rgba(147, 51, 234, 0.4)",
+                borderRadius: "12px",
+                color: "#a855f7",
+                fontSize: "14px",
+                fontWeight: 600,
+                cursor: "pointer",
+                transition: "all 0.3s ease",
+                backdropFilter: "blur(10px)",
+                letterSpacing: "0.05em"
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(147, 51, 234, 0.25)";
+                e.currentTarget.style.borderColor = "#9333ea";
+                e.currentTarget.style.transform = "translateY(-2px)";
+                e.currentTarget.style.boxShadow = "0 8px 20px rgba(147, 51, 234, 0.3)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(147, 51, 234, 0.15)";
+                e.currentTarget.style.borderColor = "rgba(147, 51, 234, 0.4)";
+                e.currentTarget.style.transform = "translateY(0)";
+                e.currentTarget.style.boxShadow = "none";
+              }}
+            >
+              Skip Intro →
+            </button>
+          )}
+        </div>
+
+        {/* Loading bar */}
+        {startScreenPhase === 'eyes' && (
+          <div style={{
+            position: "absolute",
+            bottom: "80px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            width: "300px",
+            height: "3px",
+            background: "rgba(147, 51, 234, 0.2)",
+            borderRadius: "10px",
+            overflow: "hidden"
+          }}>
+            <div style={{
+              width: "100%",
+              height: "100%",
+              background: "linear-gradient(90deg, #9333ea 0%, #a855f7 100%)",
+              animation: "loading 3s ease-in-out",
+              transformOrigin: "left"
+            }} />
+          </div>
+        )}
+
+        <style>{`
+          @keyframes loading {
+            from { transform: scaleX(0); }
+            to { transform: scaleX(1); }
+          }
+          
+          @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+        `}</style>
+      </div>
+    );
+  }
+
+  // Main App UI (your existing code continues here...)
   return (
     <div style={{ 
       height: "100vh", 
@@ -489,49 +851,6 @@ export default function Home() {
           border-color: ${theme.accentColor}60;
           transform: translateY(-1px);
         }
-        
-        .settings-panel {
-          position: absolute;
-          top: 70px;
-          right: 20px;
-          background: rgba(6,10,30,0.98);
-          border: 1px solid ${theme.borderColor}40;
-          border-radius: 16px;
-          padding: 20px;
-          min-width: 280px;
-          box-shadow: 0 20px 60px rgba(0,0,0,0.6);
-          backdrop-filter: blur(24px);
-          z-index: 1000;
-          animation: slideInUp 0.3s ease;
-        }
-        
-        .voice-selector {
-          display: grid;
-          grid-template-columns: repeat(3, 1fr);
-          gap: 8px;
-          margin-top: 12px;
-        }
-        
-        .voice-option {
-          padding: 10px;
-          background: rgba(255,255,255,0.05);
-          border: 2px solid transparent;
-          border-radius: 10px;
-          cursor: pointer;
-          text-align: center;
-          font-size: 12px;
-          transition: all 0.2s ease;
-          color: ${theme.textColor};
-        }
-        
-        .voice-option.active {
-          border-color: ${theme.accentColor};
-          background: rgba(255,255,255,0.1);
-        }
-        
-        .voice-option:hover {
-          background: rgba(255,255,255,0.1);
-        }
       `}</style>
 
       {/* Header */}
@@ -552,7 +871,7 @@ export default function Home() {
             margin: 0,
             letterSpacing: "-0.02em"
           }}>
-            AI Assistant
+            Loco
           </h1>
           <p style={{ 
             fontSize: "12px", 
@@ -586,7 +905,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Settings Panel */}
       {/* Control Bar */}
       <div style={{ 
         padding: "12px 24px", 
@@ -753,7 +1071,7 @@ export default function Home() {
                     textTransform: "uppercase",
                     letterSpacing: "0.05em"
                   }}>
-                    AI Assistant
+                    Loco
                   </div>
                 )}
                 <div className={`chat-message ${msg.role}`}>
@@ -768,8 +1086,6 @@ export default function Home() {
                         li: ({ children }) => <li style={{ marginBottom: "6px" }}>{children}</li>,
                         code: ({ node, className, children, ...props }: any) => {
                           const isInline = !className;
-                          // Hide code blocks from chat (they appear only in terminal panel)
-                          // Show inline code only
                           return isInline ? (
                             <code style={{ 
                               background: "rgba(255,255,255,0.1)", 
@@ -780,10 +1096,7 @@ export default function Home() {
                               color: theme.accentColor,
                               fontWeight: 500
                             }}>{children}</code>
-                          ) : (
-                            // Return null to hide code blocks from chat
-                            null
-                          );
+                          ) : null;
                         },
                         a: ({ href, children }) => (
                           <a 
