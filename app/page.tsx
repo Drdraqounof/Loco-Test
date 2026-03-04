@@ -6,12 +6,14 @@ import ReactMarkdown from "react-markdown";
 import CommandTerminal from "@/components/CommandTerminal";
 import { useSpeechRecognition } from "@/tools/hooks/useSpeechRecognition";
 import { useAudioPlayer } from "@/tools/hooks/useAudioPlayer";
+import { useElectron } from "@/tools/hooks/useElectron";
 import { parseResponse } from "@/tools/hooks/utils/messageParser";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 import { callAIAPI } from "@/tools/hooks/utils/apiClient";
 
 export default function Home() {
   const router = useRouter();
+  const { isElectron } = useElectron();
   const [showStartScreen, setShowStartScreen] = useState(true);
   const [startScreenPhase, setStartScreenPhase] = useState<'intro' | 'eyes' | 'fadeout'>('intro');
   const [eyePosition, setEyePosition] = useState({ x: 0, y: 0 });
@@ -403,7 +405,7 @@ export default function Home() {
   if (showStartScreen) {
     return (
       <div style={{
-        height: "100vh",
+        height: isElectron ? "calc(100vh - 32px)" : "100vh",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -664,12 +666,13 @@ export default function Home() {
   // Main App UI (your existing code continues here...)
   return (
     <div style={{ 
-      height: "100vh", 
+      height: isElectron ? "calc(100vh - 32px)" : "100vh", 
       display: "flex", 
       flexDirection: "column", 
       background: theme.bgGradient, 
       fontFamily: "'Inter', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif", 
-      transition: "background 0.8s ease" 
+      transition: "background 0.8s ease",
+      overflow: "hidden"
     }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');

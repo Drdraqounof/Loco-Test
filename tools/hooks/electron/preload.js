@@ -28,5 +28,3 @@ try {
 } catch (error) {
   console.error('✗ Failed to expose electronAPI:', error);
 }
-  platform: process.platform,
-});

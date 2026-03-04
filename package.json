@@ -43,7 +43,7 @@
     "concurrently": "^8.0.0",
     "wait-on": "^7.0.0"
   },
-  "main": "electron/main.js",
+  "main": "tools/hooks/electron/main.js",
   "homepage": "./",
   "build": {
     "appId": "com.loco.app",
