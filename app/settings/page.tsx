@@ -2,13 +2,14 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { VOICE_THEMES, VoiceKey } from "@/utils/themes";
+import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 
 export default function SettingsPage() {
   const router = useRouter();
   const [voice, setVoice] = useState<VoiceKey>("echo");
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
   const [enablePingPong, setEnablePingPong] = useState(true);
+  const [enableChess, setEnableChess] = useState(true);
   const [settingsTab, setSettingsTab] = useState<"voice" | "experimental">("voice");
   const [theme] = useState(VOICE_THEMES["echo"]);
 
@@ -17,10 +18,12 @@ export default function SettingsPage() {
     const savedVoice = localStorage.getItem("selectedVoice") as VoiceKey || "echo";
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
+    const savedChess = localStorage.getItem("enableChess") !== "false";
 
     setVoice(savedVoice);
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
+    setEnableChess(savedChess);
   }, []);
 
   // Save settings to localStorage
@@ -37,6 +40,11 @@ export default function SettingsPage() {
   const handlePingPongChange = (checked: boolean) => {
     setEnablePingPong(checked);
     localStorage.setItem("enablePingPong", checked.toString());
+  };
+
+  const handleChessChange = (checked: boolean) => {
+    setEnableChess(checked);
+    localStorage.setItem("enableChess", checked.toString());
   };
 
   return (
@@ -339,6 +347,53 @@ export default function SettingsPage() {
                     opacity: 0.6,
                   }}>
                     Type "ping pong" in chat to play a game
+                  </div>
+                </div>
+              </label>
+
+              {/* Chess Game */}
+              <label style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "12px",
+                cursor: "pointer",
+                padding: "16px",
+                background: `${theme.borderColor}10`,
+                borderRadius: "8px",
+                border: `1px solid ${theme.borderColor}20`,
+                transition: "all 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}20`;
+              }}
+              onMouseLeave={(e) => {
+                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}10`;
+              }}>
+                <input
+                  type="checkbox"
+                  checked={enableChess}
+                  onChange={(e) => handleChessChange(e.target.checked)}
+                  style={{
+                    width: "20px",
+                    height: "20px",
+                    cursor: "pointer",
+                    accentColor: theme.accentColor,
+                  }}
+                />
+                <div style={{ flex: 1 }}>
+                  <div style={{
+                    fontSize: "14px",
+                    fontWeight: 600,
+                    marginBottom: "4px",
+                  }}>
+                    Enable Chess Game
+                  </div>
+                  <div style={{
+                    fontSize: "12px",
+                    color: theme.textColor,
+                    opacity: 0.6,
+                  }}>
+                    Type "chess" in chat to play a game
                   </div>
                 </div>
               </label>

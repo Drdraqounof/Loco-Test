@@ -5,7 +5,7 @@ import {
   buildCodeSummary,
   extractLineNumbersFromResponse,
   validateLineNumbers 
-} from "@/utils/codeProcessor";
+} from "@/tools/hooks/utils/codeProcessor";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -151,7 +151,7 @@ The student has previously discussed:`;
       userContext = previousContext;
     }
 
-    const systemPrompt = `You are Loco, a friendly coding assistant that helps students learn, debug, and create code. Keep responses concise and helpful.${userGreeting}${userContext}
+    const systemPrompt = `You are Loco, a friendly coding assistant and help users with everday needs you also help students learn, debug, and create code. Keep responses concise and helpful.${userGreeting}${userContext}
 
 YOUR CAPABILITIES:
 Help debug existing code
@@ -327,38 +327,6 @@ Remember: Chat is for explanation, code blocks are for actual code!`;
       }
     }
 
-    // Add relevant resources based on language or topic
-    let enhancedMessage = aiMessage;
-    const keywords = aiMessage.toLowerCase();
-    
-    // Check if the user is asking about a specific language and add relevant resources
-    const languageResources = RESOURCES[language as keyof typeof RESOURCES];
-    const shouldAddResources = 
-      (keywords.includes("learn") || 
-       keywords.includes("read") || 
-       keywords.includes("resource") || 
-       keywords.includes("tutorial") ||
-       keywords.includes("documentation") ||
-       keywords.includes("more") ||
-       keywords.includes("help")) &&
-      languageResources;
-
-    if (shouldAddResources && !aiMessage.includes("https://")) {
-      enhancedMessage += `\n\nHere are some awesome resources to dive deeper:\n`;
-      languageResources.slice(0, 3).forEach((resource) => {
-        enhancedMessage += `- ${resource.title}: ${resource.url}\n`;
-      });
-    }
-
-    // Check for career/learning path questions
-    if ((keywords.includes("career") || keywords.includes("learn") || keywords.includes("path")) && !keywords.includes("https://")) {
-      const careerResources = RESOURCES.career;
-      enhancedMessage += `\n\nCheck out these learning platforms:\n`;
-      careerResources.forEach((resource) => {
-        enhancedMessage += `- ${resource.title}: ${resource.url}\n`;
-      });
-    }
-
     // Save conversation to database for memory if user is logged in
     if (user && user.id) {
       try {
@@ -366,7 +334,7 @@ Remember: Chat is for explanation, code blocks are for actual code!`;
           ...messages,
           {
             role: "assistant",
-            content: enhancedMessage,
+            content: aiMessage,
           },
         ];
 
@@ -380,7 +348,7 @@ Remember: Chat is for explanation, code blocks are for actual code!`;
 
     return NextResponse.json({
       success: true,
-      message: enhancedMessage,
+      message: aiMessage,
       audio: audioBase64,
     });
   } catch (error) {

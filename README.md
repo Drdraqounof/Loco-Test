@@ -28,11 +28,44 @@ Loco is a **Next.js-based, voice-enabled AI chatbot** that:
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18 or higher
-- OpenAI API key (get one at [platform.openai.com](https://platform.openai.com))
-- A modern web browser
+- **Docker & Docker Compose** (recommended) - [Install Docker Desktop](https://www.docker.com/products/docker-desktop)
+- OR manually:
+  - Node.js 18 or higher
+  - PostgreSQL 15 (for database)
+  - OpenAI API key (get one at [platform.openai.com](https://platform.openai.com))
+  - A modern web browser
 
-### Installation
+### Quick Start with Docker Compose (Recommended)
+
+```bash
+# Clone and navigate
+git clone <repository-url>
+cd my-app
+
+# Create production environment file
+cp .env.production.example .env.production
+# Edit .env.production and add your OPENAI_API_KEY
+
+# Start everything with one command
+docker compose up -d
+
+# Run database migrations (first time only)
+docker compose exec app npm run prisma:migrate:deploy
+
+# Check status
+docker compose ps
+```
+
+Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
+
+**Expected Output** from `docker compose ps`:
+```
+NAME                COMMAND                  SERVICE      STATUS            PORTS
+loco_app            "docker-entrypoint.s…"   app          Up (healthy)      0.0.0.0:3000->3000/tcp
+loco_db             "docker-entrypoint.s…"   db           Up (healthy)      0.0.0.0:5432->5432/tcp
+```
+
+### Local Development (without Docker)
 
 ```bash
 # Clone and navigate
@@ -43,21 +76,34 @@ cd my-app
 npm install
 
 # Create environment file
-echo "OPENAI_API_KEY=your_actual_key_here" > .env.local
-```
+cp .env.production .env.local
+# Edit .env.local and add your OPENAI_API_KEY
 
-### Run Loco
-
-```bash
 # Development (hot reload)
 npm run dev
-
-# Production build
-npm run build
-npm run start
 ```
 
 Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
+
+### Useful Docker Commands
+
+```bash
+# View logs from all services
+docker compose logs -f
+
+# Stop all services
+docker compose down
+
+# Complete reset (removes database data)
+docker compose down -v
+
+# Rebuild and start fresh
+docker compose up -d --build
+
+# Run commands inside the app container
+docker compose exec app npm run prisma:studio  # Open Prisma Studio
+docker compose exec app npm run prisma:migrate:dev  # Create new migration
+```
 
 ---
 
@@ -141,6 +187,225 @@ Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
 - ✅ Auto-play TTS toggle
 - ✅ Ping Pong easter egg toggle
 - ✅ Settings persist across sessions (localStorage)
+
+---
+
+## 🐳 Architecture (Orchestration)
+
+Loco runs as a **containerized two-service stack** using Docker Compose:
+
+```
+┌─────────────────────────────────────────┐
+│          Docker Network                 │
+│         (loco_network)                  │
+├─────────────────────────────────────────┤
+│                                         │
+│  ┌──────────────────┐                   │
+│  │   Next.js App    │                   │
+│  │  (loco_app)      │◄────┐             │
+│  │  Port: 3000      │     │ Uses        │
+│  │  Status: Running │     │ Service     │
+│  └──────────────────┘     │ Name: db    │
+│                           │             │
+│  ┌──────────────────┐     │             │
+│  │  PostgreSQL 15   │─────┘             │
+│  │   (loco_db)      │                   │
+│  │  Port: 5432      │                   │
+│  │  Status: Healthy │                   │
+│  └──────────────────┘                   │
+│       ↓                                 │
+│   (Persistent                           │
+│    Volume)                              │
+│                                         │
+└─────────────────────────────────────────┘
+```
+
+### Services
+
+| Service | Image | Purpose | Hostname | Port |
+|---------|-------|---------|----------|------|
+| **app** | node:18-alpine | Next.js app | app | 3000 |
+| **db** | postgres:15 | Database | db | 5432 |
+
+### Communication
+
+- **App → Database**: Uses service name `db:5432` (not localhost)
+  - Inside Docker, containers use service names for networking
+  - Environment: `DATABASE_URL=postgresql://user:pass@db:5432/loco_db`
+
+### Networking
+
+- **Network**: `loco_network` (bridge driver)
+- **Isolation**: Services can only reach each other, not the host
+- **Host Access**: Ports 3000 and 5432 are mapped to your machine
+
+---
+
+## ✨ Stability Features
+
+Loco's orchestration includes **production-grade stability** features:
+
+### 1. **Health Checks**
+
+Database is deemed "healthy" when PostgreSQL is ready to accept connections:
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "pg_isready -U loco_user -d loco_db"]
+  interval: 10s
+  timeout: 5s
+  retries: 5
+```
+
+App is healthy when it responds to HTTP requests:
+```yaml
+healthcheck:
+  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+  interval: 30s
+  timeout: 3s
+  retries: 3
+```
+
+### 2. **Dependency Management**
+
+The app **waits for database to be healthy** before starting:
+```yaml
+depends_on:
+  db:
+    condition: service_healthy  # Crucial: ensures DB is ready
+```
+
+**Why this matters**: Without `service_healthy`, the app would start while PostgreSQL is still initializing, causing connection errors.
+
+### 3. **Restart Policies**
+
+Both services use `restart: always`:
+- If a service crashes, Docker automatically restarts it
+- Automatic recovery from transient failures
+- Tested with `docker kill <container>` and verified re-start
+
+### 4. **Data Persistence**
+
+Database uses a named volume (`postgres_data`):
+```yaml
+volumes:
+  postgres_data:
+driver: local
+```
+
+- Data survives container restarts
+- Data is only lost with explicit `docker compose down -v`
+
+### Testing Stability
+
+Prove determinism (clean slate to full health):
+```bash
+# Completely remove everything
+docker compose down -v
+
+# Rebuild and start fresh
+docker compose up -d --build
+
+# Verify both services are healthy (wait 15 seconds)
+sleep 15
+docker compose ps
+
+# Expected:
+# loco_app  ✓ healthy
+# loco_db   ✓ healthy
+```
+
+---
+
+## 🔐 Environment Management
+
+Production secrets are managed securely using environment files:
+
+### Structure
+
+```
+my-app/
+├── .env.production          # ← Secrets file (NOT in git)
+├── .env.local              # ← Dev secrets (NOT in git)
+├── docker-compose.yml      # ← References .env.production
+└── .gitignore              # ← Excludes .env*
+```
+
+### Setup
+
+1. **Create `.env.production`** with required secrets:
+   ```env
+   OPENAI_API_KEY=sk-your-actual-key-here
+   POSTGRES_USER=loco_user
+   POSTGRES_PASSWORD=loco_password
+   POSTGRES_DB=loco_db
+   ```
+
+2. **Verify it's not tracked**:
+   ```bash
+   git status
+   # .env.production should NOT appear (already in .gitignore)
+   ```
+
+3. **Docker Compose uses it**:
+   ```yaml
+   app:
+     env_file: .env.production  # Loads variables into container
+   ```
+
+### Why Not Commit Secrets?
+
+- ❌ Never commit API keys, passwords, or tokens
+- ❌ Leaked secrets can be exploited forever
+- ❌ Git history is permanent (even deleting doesn't fully remove)
+- ✅ Use `.gitignore` and environment files instead
+- ✅ In production, use secret management tools (AWS Secrets Manager, Vault, etc.)
+
+---
+
+## 💼 Business Value
+
+For **BrightPath's educational mission**, orchestration provides:
+
+### 1. **Reliability** 🛡️
+- Students can trust Loco works, not "sometimes works"
+- Automatic crash recovery keeps the assistant always available
+- Healthcare analogy: You wouldn't use a patient monitor that crashes
+
+### 2. **Consistency** 📦
+- Same experience whether running locally or deployed
+- Teammates and instructors get identical environments
+- "Works on my machine" problem is solved
+
+### 3. **Scalability** 📈
+- Foundation for running multiple instances (each student gets one)
+- Easy to deploy to cloud infrastructure (AWS, GCP, Vercel, etc.)
+- As education scales, infrastructure scales
+
+### 4. **Security** 🔒
+- Secrets stay off developers' machines
+- Database password never exposed in source code
+- Foundation for compliance (FERPA, HIPAA, etc.)
+
+### 5. **Developer Experience** ✨
+- **One command startup**: `docker compose up -d`
+- **No local setup required**: Developers don't install PostgreSQL manually
+- **Onboarding**: New team members clone → `docker compose up` → coding (3 minutes)
+- **Troubleshooting**: Issues are reproducible and debuggable
+
+### 6. **Cost Efficiency** 💰
+- Minimal resource overhead (Node + PostgreSQL containerized)
+- Can run on low-cost cloud infrastructure
+- Pay for what you use, not for oversized servers
+
+### BrightPath Context
+
+For an **AI voice tutoring platform**, reliability is non-negotiable:
+- **Students depend on it**: Studying for exams, learning new skills
+- **Instructors monitor it**: Ensuring availability for classes
+- **Legal responsibility**: Data privacy and uptime guarantees
+- **Competitive edge**: Works reliably while competitors have downtime
+
+Orchestration using Docker Compose is the industry standard for this reason.
 
 ---
 

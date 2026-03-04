@@ -78,7 +78,7 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
     };
 
     recognition.onerror = (event: any) => {
-      const silentErrors = ["no-speech", "aborted"];
+      const silentErrors = ["no-speech", "aborted", "network"];
       if (!silentErrors.includes(event.error)) {
         console.error("Speech recognition error", event.error);
       }
@@ -102,7 +102,7 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
       setSpeechError(event.error);
 
       setTimeout(() => {
-        if (["no-speech", "aborted"].includes(event.error)) {
+        if (["no-speech", "aborted", "network"].includes(event.error)) {
           speechErrorRef.current = null;
           setLabel("tap to speak");
           setSpeechError(null);

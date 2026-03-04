@@ -4,11 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import CommandTerminal from "@/components/CommandTerminal";
-import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
-import { useAudioPlayer } from "@/hooks/useAudioPlayer";
-import { parseResponse } from "@/utils/messageParser";
-import { VOICE_THEMES, VoiceKey } from "@/utils/themes";
-import { callAIAPI } from "@/utils/apiClient";
+import { useSpeechRecognition } from "@/tools/hooks/useSpeechRecognition";
+import { useAudioPlayer } from "@/tools/hooks/useAudioPlayer";
+import { parseResponse } from "@/tools/hooks/utils/messageParser";
+import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
+import { callAIAPI } from "@/tools/hooks/utils/apiClient";
 
 export default function Home() {
   const router = useRouter();
@@ -25,6 +25,8 @@ export default function Home() {
   const [copiedNotification, setCopiedNotification] = useState(false);
   const [suggestedPrompts, setSuggestedPrompts] = useState<Array<{ emoji: string; text: string }>>([]);
   const [enablePingPong, setEnablePingPong] = useState(true);
+  const [enableChess, setEnableChess] = useState(true);
+  const [isMounted, setIsMounted] = useState(false);
   const allPrompts: Array<{ emoji: string; text: string }> = [
     { 
       emoji: "📝", 
@@ -68,7 +70,7 @@ export default function Home() {
     }
   ];
   
-  const { listening, speechSupported, userMessage, setUserMessage, toggleListening } = useSpeechRecognition();
+  const { listening, label, speechSupported, userMessage, setUserMessage, toggleListening } = useSpeechRecognition();
   const { audioRef, playAudio, isPlayingAudio } = useAudioPlayer();
   const theme = VOICE_THEMES[voice];
   const prevListeningRef = useRef(listening);
@@ -102,6 +104,10 @@ export default function Home() {
   }, [conversationHistory, loading]);
 
   useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  useEffect(() => {
     // Initialize Speech Synthesis voices and shuffle prompts on mount
     if (window.speechSynthesis) {
       window.speechSynthesis.onvoiceschanged = () => {
@@ -115,10 +121,12 @@ export default function Home() {
     const savedVoice = localStorage.getItem("selectedVoice") as VoiceKey || "echo";
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
+    const savedChess = localStorage.getItem("enableChess") !== "false";
     
     setVoice(savedVoice);
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
+    setEnableChess(savedChess);
     
     // Shuffle and select 3 random prompts on page load
     const shuffled = [...allPrompts].sort(() => Math.random() - 0.5);
@@ -164,6 +172,12 @@ export default function Home() {
       // Check if user wants to play ping pong
       if (enablePingPong && userMessage.toLowerCase().includes("ping pong")) {
         router.push("/game");
+        return;
+      }
+
+      // Check if user wants to play chess
+      if (enableChess && userMessage.toLowerCase().includes("chess")) {
+        router.push("/chess");
         return;
       }
 
@@ -624,11 +638,20 @@ export default function Home() {
           gap: "8px"
         }}>
           {autoPlayAudio && <span>🔊 Auto-play enabled</span>}
-          {listening && <span style={{ color: theme.accentColor }}>🎤 Listening...</span>}
+          {label !== "tap to speak" && label !== "speech not supported" && (
+            <span style={{ 
+              color: (label.includes("error") || label.includes("no ") || label.includes("denied") || label.includes("disabled")) ? "#ff6b6b" : theme.accentColor,
+              display: "flex",
+              alignItems: "center",
+              gap: "4px"
+            }}>
+              {label === "listening..." ? "🎤" : "ℹ️"} {label}
+            </span>
+          )}
         </div>
 
         {/* Keyboard Shortcuts Hints */}
-        {typeof window !== 'undefined' && (
+        {isMounted && (
           <div style={{ 
             fontSize: "11px", 
             color: theme.textColor, 
