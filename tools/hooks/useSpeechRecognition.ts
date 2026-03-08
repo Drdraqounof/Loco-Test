@@ -4,6 +4,7 @@ declare global {
   interface Window {
     webkitSpeechRecognition?: any;
     SpeechRecognition?: any;
+    electronAPI?: any;
   }
 }
 
@@ -25,7 +26,20 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
   const speechErrorRef = useRef<string | null>(null);
   const [userMessage, setUserMessage] = useState("");
 
+  // Electron: MediaRecorder-based recording for Whisper fallback
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  // Derive at call time so it works reliably after hydration
+  const isElectron = () => typeof window !== "undefined" && !!window.electronAPI;
+
   useEffect(() => {
+    // In Electron the Web Speech API fails (missing Google API key in Chromium).
+    // We use the MediaRecorder + Whisper path there, so skip Web Speech setup.
+    if (isElectron()) {
+      setSpeechSupported(true);
+      return;
+    }
+
     const SpeechRecognition =
       window.webkitSpeechRecognition || window.SpeechRecognition;
 
@@ -39,7 +53,7 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
     setSpeechSupported(true);
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = lang;
 
@@ -113,8 +127,90 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
     recognitionRef.current = recognition;
   }, [lang]);
 
+  // --- Electron path: record via MediaRecorder then transcribe with Whisper ---
+  const startElectronListening = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setLabel("processing...");
+
+        const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || "audio/webm" });
+
+        if (audioBlob.size === 0) {
+          console.error("[STT] Audio blob is empty — no audio was captured");
+          setLabel("no audio captured - try again");
+          setTimeout(() => setLabel("tap to speak"), 3000);
+          isRecognitionRunningRef.current = false;
+          setListening(false);
+          return;
+        }
+
+        // Use the actual recorded MIME type for the filename extension
+        const ext = (mediaRecorder.mimeType || "audio/webm").includes("ogg") ? "ogg" : "webm";
+        const formData = new FormData();
+        formData.append("file", audioBlob, `audio.${ext}`);
+
+        try {
+          const response = await fetch("/api/stt", { method: "POST", body: formData });
+          const data = await response.json();
+          if (data.success && data.text) {
+            setUserMessage(data.text.trim());
+          } else {
+            console.warn("[STT] Transcription failed:", data.error);
+            setLabel(typeof data.error === "string" ? data.error : "couldn't transcribe - try again");
+            setTimeout(() => setLabel("tap to speak"), 3000);
+          }
+        } catch {
+          setLabel("transcription failed - try again");
+          setTimeout(() => setLabel("tap to speak"), 3000);
+        } finally {
+          isRecognitionRunningRef.current = false;
+          setListening(false);
+          if (!speechErrorRef.current) setLabel("tap to speak");
+        }
+      };
+
+      mediaRecorder.start();
+      isRecognitionRunningRef.current = true;
+      setListening(true);
+      setLabel("listening...");
+    } catch (err) {
+      console.error("Microphone access error:", err);
+      setLabel("no microphone access");
+      setSpeechError("audio-capture");
+      setTimeout(() => {
+        setLabel("tap to speak");
+        setSpeechError(null);
+      }, 3000);
+    }
+  };
+
+  const stopElectronListening = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+  };
+  // --------------------------------------------------------------------------
+
   const startListening = () => {
-    if (!speechSupported || !recognitionRef.current) return;
+    if (!speechSupported) return;
+
+    if (isElectron()) {
+      startElectronListening();
+      return;
+    }
+
+    if (!recognitionRef.current) return;
 
     speechErrorRef.current = null;
     setSpeechError(null);
@@ -134,6 +230,11 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
   };
 
   const stopListening = () => {
+    if (isElectron()) {
+      stopElectronListening();
+      return;
+    }
+
     setLabel("processing...");
     if (isRecognitionRunningRef.current && recognitionRef.current) {
       recognitionRef.current.stop();

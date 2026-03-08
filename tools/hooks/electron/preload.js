@@ -22,6 +22,11 @@ try {
     
     // Platform info
     platform: process.platform,
+
+    // Listen for main process trigger to start voice listening
+    onStartListening: (callback) => {
+      ipcRenderer.on('start-listening', () => callback());
+    },
   });
   
   console.log('✓ electronAPI exposed successfully');
