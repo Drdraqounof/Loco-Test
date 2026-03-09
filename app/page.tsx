@@ -36,6 +36,16 @@ interface ChatSessionResponse {
   session: ChatSession;
 }
 
+interface CodeBlock {
+  language: string;
+  code: string;
+}
+
+interface HighlightToken {
+  value: string;
+  className: string;
+}
+
 // ── Data ──
 const ALL_PROMPTS = [
   { emoji: "📝", text: "Build a React Todo List component with add, delete, and localStorage persistence" },
@@ -67,6 +77,443 @@ const EYE_POSITIONS = [
 
 function getRandomPrompts(count: number) {
   return [...ALL_PROMPTS].sort(() => Math.random() - 0.5).slice(0, count);
+}
+
+function normalizeCodeLanguage(language: string) {
+  return language.trim().toLowerCase();
+}
+
+function getCodeLanguageFamily(language: string) {
+  const normalized = normalizeCodeLanguage(language);
+
+  if (["javascript", "js", "typescript", "ts", "jsx", "tsx", "javascriptreact", "typescriptreact"].includes(normalized)) {
+    return "script";
+  }
+
+  if (["html", "xml", "svg"].includes(normalized)) {
+    return "markup";
+  }
+
+  if (normalized === "css") {
+    return "style";
+  }
+
+  if (["bash", "shell", "sh", "zsh"].includes(normalized)) {
+    return "shell";
+  }
+
+  if (normalized === "json") {
+    return "json";
+  }
+
+  return "plain";
+}
+
+function isReactPreviewLanguage(language: string) {
+  return ["jsx", "tsx", "javascriptreact", "typescriptreact"].includes(normalizeCodeLanguage(language));
+}
+
+function escapeEmbeddedScript(code: string) {
+  return code.replace(/<\/script/gi, "<\\/script");
+}
+
+function formatAllCodeBlocksForCopy(blocks: CodeBlock[]) {
+  return blocks
+    .map((block) => `\`\`\`${block.language || "text"}\n${block.code}\n\`\`\``)
+    .join("\n\n");
+}
+
+function formatCommandsForCopy(commands: string[]) {
+  return commands.map((command) => `$ ${command}`).join("\n");
+}
+
+function extractReactPreviewSource(source: string) {
+  let defaultExportName: string | null = null;
+
+  let prepared = source
+    .replace(/^\s*import[\s\S]*?from\s+["'][^"']+["'];?\s*$/gm, "")
+    .replace(/^\s*import\s+["'][^"']+["'];?\s*$/gm, "")
+    .replace(/^\s*export\s+default\s+function\s+([A-Za-z_]\w*)/m, (_, name: string) => {
+      defaultExportName = name;
+      return `function ${name}`;
+    })
+    .replace(/^\s*export\s+default\s+class\s+([A-Za-z_]\w*)/m, (_, name: string) => {
+      defaultExportName = name;
+      return `class ${name}`;
+    })
+    .replace(/^\s*export\s+default\s+([A-Za-z_]\w*)\s*;?\s*$/gm, (_, name: string) => {
+      defaultExportName = name;
+      return "";
+    })
+    .replace(/^\s*export\s+\{[^}]+\};?\s*$/gm, "")
+    .replace(/^\s*export\s+(?=(const|function|class|let|var|interface|type|enum)\b)/gm, "");
+
+  if (!defaultExportName) {
+    prepared = prepared.replace(/^\s*export\s+default\s+/m, () => {
+      defaultExportName = "PreviewComponent";
+      return `const ${defaultExportName} = `;
+    });
+  }
+
+  if (!defaultExportName) {
+    const componentPatterns = [
+      /function\s+([A-Z][A-Za-z0-9_]*)\s*\(/,
+      /class\s+([A-Z][A-Za-z0-9_]*)\s+extends/,
+      /const\s+([A-Z][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+      /let\s+([A-Z][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+      /var\s+([A-Z][A-Za-z0-9_]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/,
+      /const\s+([A-Z][A-Za-z0-9_]*)\s*=\s*function\s*\(/,
+    ];
+
+    for (const pattern of componentPatterns) {
+      const match = prepared.match(pattern);
+      if (match?.[1]) {
+        defaultExportName = match[1];
+        break;
+      }
+    }
+  }
+
+  if (!defaultExportName && prepared.trim().startsWith("<")) {
+    defaultExportName = "PreviewComponent";
+    prepared = `const ${defaultExportName} = () => (\n${prepared.trim()}\n);`;
+  }
+
+  return {
+    source: prepared.trim(),
+    componentName: defaultExportName,
+  };
+}
+
+function buildReactPreviewDocument(codeBlocks: CodeBlock[], css: string) {
+  const reactBlocks = codeBlocks.filter((block) => isReactPreviewLanguage(block.language));
+
+  if (reactBlocks.length === 0) {
+    return null;
+  }
+
+  const combinedSource = reactBlocks.map((block) => block.code).join("\n\n");
+  const prepared = extractReactPreviewSource(combinedSource);
+
+  if (!prepared.componentName) {
+    return null;
+  }
+
+  const safeCode = escapeEmbeddedScript(prepared.source);
+
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Inter, system-ui, sans-serif;
+        background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+        color: #0f172a;
+      }
+      #root {
+        min-height: 100vh;
+      }
+      #preview-error {
+        display: none;
+        margin: 16px;
+        padding: 16px;
+        border-radius: 16px;
+        background: #0f172a;
+        color: #f8fafc;
+        white-space: pre-wrap;
+        font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      ${css}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <pre id="preview-error"></pre>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script type="text/babel" data-presets="react,typescript">
+      const reportPreviewError = (error) => {
+        const root = document.getElementById("root");
+        const panel = document.getElementById("preview-error");
+        if (root) {
+          root.innerHTML = "";
+        }
+        if (panel) {
+          panel.style.display = "block";
+          panel.textContent = String(error?.stack || error?.message || error);
+        }
+      };
+
+      window.addEventListener("error", (event) => {
+        event.preventDefault();
+        reportPreviewError(event.error || event.message);
+      });
+
+      try {
+        const { useState, useEffect, useMemo, useRef, useReducer, useContext, useTransition, useDeferredValue, useId, Fragment } = React;
+        ${safeCode}
+        const PreviewComponent = ${prepared.componentName};
+        const previewRoot = ReactDOM.createRoot(document.getElementById("root"));
+        previewRoot.render(React.createElement(PreviewComponent));
+      } catch (error) {
+        reportPreviewError(error);
+      }
+    <\/script>
+  </body>
+</html>`;
+}
+
+function getHighlightTokens(line: string, language: string): HighlightToken[] {
+  const family = getCodeLanguageFamily(language);
+  const scriptKeywords = new Set([
+    "import", "from", "export", "default", "function", "return", "const", "let", "var", "if", "else", "for",
+    "while", "switch", "case", "break", "continue", "try", "catch", "finally", "new", "class", "extends",
+    "async", "await", "throw", "typeof", "instanceof", "interface", "type", "enum", "implements", "true",
+    "false", "null", "undefined", "public", "private", "protected", "readonly", "as",
+  ]);
+
+  let pattern: RegExp | null = null;
+
+  if (family === "script") {
+    pattern = /(\/\/.*$|\/\*[\s\S]*?\*\/)|(`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|\b(?:import|from|export|default|function|return|const|let|var|if|else|for|while|switch|case|break|continue|try|catch|finally|new|class|extends|async|await|throw|typeof|instanceof|interface|type|enum|implements|true|false|null|undefined|public|private|protected|readonly|as)\b|\b\d+(?:\.\d+)?\b|[{}()[\].,;:+\-*/=<>!?|&]+/g;
+  } else if (family === "markup") {
+    pattern = /(<!--.*?-->)|(<\/?[A-Za-z][\w:-]*)|(\/?\s*>)|(\s+[A-Za-z_:][\w:.-]*(?==))|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
+  } else if (family === "style") {
+    pattern = /(\/\*.*?\*\/)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|#[0-9a-fA-F]{3,8}|\.[A-Za-z_-][\w-]*|@[A-Za-z-]+|\b\d+(?:\.\d+)?(?:px|rem|em|vh|vw|%)?\b|[{}():;,.>+#-]+/g;
+  } else if (family === "shell") {
+    pattern = /(#[^\n]*)|("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|(\$\{?\w+\}?)|(--?[\w-]+)|\b(?:sudo|npm|npx|node|pnpm|yarn|git|cd|ls|mkdir|rm|cp|mv|echo|cat|docker|docker-compose|curl)\b/g;
+  } else if (family === "json") {
+    pattern = /("(?:[^"\\]|\\.)*"(?=\s*:))|("(?:[^"\\]|\\.)*")|\b(?:true|false|null)\b|\b\d+(?:\.\d+)?\b|[{}\[\],:]/g;
+  }
+
+  if (!pattern) {
+    return [{ value: line || " ", className: "text-foreground" }];
+  }
+
+  const tokens: HighlightToken[] = [];
+  let lastIndex = 0;
+
+  for (const match of line.matchAll(pattern)) {
+    const value = match[0] ?? "";
+    const index = match.index ?? 0;
+
+    if (index > lastIndex) {
+      tokens.push({
+        value: line.slice(lastIndex, index),
+        className: "text-foreground",
+      });
+    }
+
+    const trimmed = value.trim();
+    let className = "text-foreground";
+
+    if (family === "script") {
+      className = trimmed.startsWith("//") || trimmed.startsWith("/*")
+        ? "text-slate-500 italic"
+        : /^[`"']/.test(trimmed)
+          ? "text-emerald-300"
+          : /^\d/.test(trimmed)
+            ? "text-amber-300"
+            : scriptKeywords.has(trimmed)
+              ? "text-sky-300"
+              : "text-violet-300";
+    } else if (family === "markup") {
+      className = trimmed.startsWith("<!--")
+        ? "text-slate-500 italic"
+        : trimmed.startsWith("<") || trimmed === ">" || trimmed === "/>"
+          ? "text-pink-300"
+          : /^["']/.test(trimmed)
+            ? "text-emerald-300"
+            : "text-amber-300";
+    } else if (family === "style") {
+      className = trimmed.startsWith("/*")
+        ? "text-slate-500 italic"
+        : trimmed.startsWith("@")
+          ? "text-sky-300"
+          : /^["']/.test(trimmed)
+            ? "text-emerald-300"
+            : trimmed.startsWith("#") || trimmed.startsWith(".")
+              ? "text-pink-300"
+              : /^\d/.test(trimmed)
+                ? "text-amber-300"
+                : "text-violet-300";
+    } else if (family === "shell") {
+      className = trimmed.startsWith("#")
+        ? "text-slate-500 italic"
+        : /^["']/.test(trimmed)
+          ? "text-emerald-300"
+          : trimmed.startsWith("$")
+            ? "text-cyan-300"
+            : trimmed.startsWith("-")
+              ? "text-amber-300"
+              : "text-sky-300";
+    } else if (family === "json") {
+      className = /:$/.test(trimmed) || /"\s*:/.test(value)
+        ? "text-sky-300"
+        : /^["']/.test(trimmed)
+          ? "text-emerald-300"
+          : /^\d/.test(trimmed)
+            ? "text-amber-300"
+            : trimmed === "true" || trimmed === "false" || trimmed === "null"
+              ? "text-violet-300"
+              : "text-muted-foreground";
+    }
+
+    tokens.push({ value, className });
+    lastIndex = index + value.length;
+  }
+
+  if (lastIndex < line.length) {
+    tokens.push({
+      value: line.slice(lastIndex),
+      className: "text-foreground",
+    });
+  }
+
+  return tokens.length > 0 ? tokens : [{ value: line || " ", className: "text-foreground" }];
+}
+
+function renderHighlightedLine(line: string, language: string) {
+  return getHighlightTokens(line, language).map((token, index) => (
+    <span key={`${index}-${token.value}`} className={token.className}>
+      {token.value || " "}
+    </span>
+  ));
+}
+
+function buildPreviewDocument(codeBlocks: CodeBlock[]) {
+  if (codeBlocks.length === 0) {
+    return null;
+  }
+
+  const htmlBlocks = codeBlocks.filter((block) => {
+    const language = normalizeCodeLanguage(block.language);
+    return language === "html" || language === "xml";
+  });
+  const cssBlocks = codeBlocks.filter((block) => normalizeCodeLanguage(block.language) === "css");
+  const jsBlocks = codeBlocks.filter((block) => {
+    const language = normalizeCodeLanguage(block.language);
+    return language === "javascript" || language === "js";
+  });
+  const svgBlock = codeBlocks.find((block) => normalizeCodeLanguage(block.language) === "svg");
+  const css = cssBlocks.map((block) => block.code).join("\n\n");
+
+  if (svgBlock) {
+    return `<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: linear-gradient(180deg, #0f172a 0%, #020617 100%);
+      }
+      svg {
+        max-width: 100%;
+        max-height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    ${svgBlock.code}
+  </body>
+</html>`;
+  }
+
+  const reactPreviewDocument = buildReactPreviewDocument(codeBlocks, css);
+  if (reactPreviewDocument) {
+    return reactPreviewDocument;
+  }
+
+  if (htmlBlocks.length === 0 && cssBlocks.length === 0 && jsBlocks.length === 0) {
+    return null;
+  }
+
+  const html = htmlBlocks.map((block) => block.code).join("\n\n");
+  const script = jsBlocks.map((block) => block.code).join("\n\n");
+
+  if (html) {
+    const styleTag = css ? `<style>${css}</style>` : "";
+    const scriptTag = script ? `<script>${script}<\/script>` : "";
+
+    if (/<html[\s>]/i.test(html)) {
+      let document = html;
+      if (styleTag) {
+        document = /<head[\s>]/i.test(document)
+          ? document.replace(/<\/head>/i, `${styleTag}</head>`)
+          : document.replace(/<html([^>]*)>/i, `<html$1><head>${styleTag}</head>`);
+      }
+      if (scriptTag) {
+        document = /<\/body>/i.test(document)
+          ? document.replace(/<\/body>/i, `${scriptTag}</body>`)
+          : `${document}${scriptTag}`;
+      }
+      return document;
+    }
+
+    return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    ${styleTag}
+  </head>
+  <body>
+    ${html}
+    ${scriptTag}
+  </body>
+</html>`;
+  }
+
+  return `<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: Inter, system-ui, sans-serif;
+        background: #020617;
+        color: #e2e8f0;
+        display: grid;
+        place-items: center;
+      }
+      .preview-shell {
+        width: min(720px, calc(100vw - 32px));
+        border-radius: 20px;
+        padding: 24px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+      }
+      ${css}
+    </style>
+  </head>
+  <body>
+    <div class="preview-shell">
+      <div id="app">Preview shell ready.</div>
+    </div>
+    <script>${script}<\/script>
+  </body>
+</html>`;
+}
+
+function renderLineNumberedCode(code: string, language: string) {
+  return code.split("\n").map((line, index) => (
+    <div key={`${index}-${line}`} className="grid grid-cols-[auto_1fr] gap-4 px-4">
+      <span className="select-none text-right text-[11px] text-muted-foreground/60">{index + 1}</span>
+      <span className="whitespace-pre-wrap break-words text-foreground">{renderHighlightedLine(line || " ", language)}</span>
+    </div>
+  ));
 }
 
 // Helper to strip URLs from text for speech
@@ -132,8 +579,11 @@ export default function Home() {
   const [showTerminal, setShowTerminal] = useState(false);
   const [extractedCode, setExtractedCode] = useState("");
   const [codeLanguage, setCodeLanguage] = useState("javascript");
+  const [codeBlocks, setCodeBlocks] = useState<CodeBlock[]>([]);
+  const [activeCodeBlockIndex, setActiveCodeBlockIndex] = useState(0);
+  const [terminalView, setTerminalView] = useState<"preview" | "code" | "commands">("code");
   const [terminalCommands, setTerminalCommands] = useState<string[]>([]);
-  const [copied, setCopied] = useState(false);
+  const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState<Array<{ emoji: string; text: string }>>([]);
   const [lastAudioBase64, setLastAudioBase64] = useState<string | null>(null);
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
@@ -144,6 +594,12 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+
+  const updateActiveSessionId = (sessionId: string | null) => {
+    activeSessionIdRef.current = sessionId;
+    setActiveSessionId(sessionId);
+  };
 
   const upsertSessionState = (session: ChatSession) => {
     setChatSessions((previousSessions) => {
@@ -159,7 +615,10 @@ export default function Home() {
 
     if (lastAssistant) {
       const parsed = parseResponse(lastAssistant.content);
+      const previewDocument = buildPreviewDocument(parsed.codeBlocks);
       setShowTerminal(parsed.codeBlocks.length > 0 || parsed.commands.length > 0);
+      setCodeBlocks(parsed.codeBlocks);
+      setActiveCodeBlockIndex(0);
       if (parsed.codeBlocks.length > 0) {
         setExtractedCode(parsed.codeBlocks[0].code);
         setCodeLanguage(parsed.codeBlocks[0].language);
@@ -167,6 +626,7 @@ export default function Home() {
         setExtractedCode("");
         setCodeLanguage("javascript");
       }
+      setTerminalView(previewDocument ? "preview" : parsed.codeBlocks.length > 0 ? "code" : "commands");
       setTerminalCommands(parsed.commands);
       return;
     }
@@ -174,12 +634,15 @@ export default function Home() {
     setShowTerminal(false);
     setExtractedCode("");
     setCodeLanguage("javascript");
+    setCodeBlocks([]);
+    setActiveCodeBlockIndex(0);
+    setTerminalView("code");
     setTerminalCommands([]);
   };
 
   const applySession = (session: ChatSession) => {
     setMessages(session.messages);
-    setActiveSessionId(session.id);
+    updateActiveSessionId(session.id);
     setShowHistory(false);
     syncTerminalFromMessages(session.messages);
   };
@@ -194,7 +657,7 @@ export default function Home() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: preferredSessionId ?? undefined,
+        id: preferredSessionId ?? activeSessionIdRef.current ?? undefined,
         title,
         messages: msgs,
       }),
@@ -206,7 +669,7 @@ export default function Home() {
 
     const data = (await response.json()) as ChatSessionResponse;
     upsertSessionState(data.session);
-    setActiveSessionId(data.session.id);
+    updateActiveSessionId(data.session.id);
     return data.session;
   };
 
@@ -271,9 +734,9 @@ export default function Home() {
     }
 
     setChatSessions(data.sessions);
-    if (data.sessions.length > 0) {
-      applySession(data.sessions[0]);
-    }
+    updateActiveSessionId(null);
+    setMessages([]);
+    syncTerminalFromMessages([]);
   };
 
   const loadSession = (session: ChatSession) => {
@@ -288,7 +751,7 @@ export default function Home() {
 
     setChatSessions((previousSessions) => previousSessions.filter((session) => session.id !== id));
     if (activeSessionId === id) {
-      setActiveSessionId(null);
+      updateActiveSessionId(null);
       setMessages([]);
       syncTerminalFromMessages([]);
     }
@@ -296,8 +759,8 @@ export default function Home() {
 
   const startNewChat = () => {
     setMessages([]);
-    setActiveSessionId(null);
-    setShowTerminal(false); setExtractedCode(""); setTerminalCommands([]);
+    updateActiveSessionId(null);
+    setShowTerminal(false); setExtractedCode(""); setCodeBlocks([]); setActiveCodeBlockIndex(0); setTerminalView("code"); setTerminalCommands([]);
     setLastAudioBase64(null);
     if (window.speechSynthesis) { window.speechSynthesis.cancel(); setIsSpeechPaused(false); }
     setShowHistory(false);
@@ -419,6 +882,7 @@ export default function Home() {
     
     try {
       const updated: Message[] = [...messages, { role: "user", content: input }];
+      const currentSessionId = activeSessionIdRef.current;
       setMessages(updated);
       setInput("");
       setUserMessage("");
@@ -433,8 +897,8 @@ export default function Home() {
         return;
       }
 
-      const session = await persistSession(updated, activeSessionId);
-      const result = await callAIAPI(updated, voice, session?.id ?? activeSessionId);
+      const session = await persistSession(updated, currentSessionId);
+      const result = await callAIAPI(updated, voice, session?.id ?? currentSessionId);
       
       if (!result.success || !result.data) {
         setLoading(false);
@@ -443,19 +907,26 @@ export default function Home() {
 
       const message = result.data.message || "No response";
       const parsed = parseResponse(message);
+      const previewDocument = buildPreviewDocument(parsed.codeBlocks);
       
       const hasCode = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
       setShowTerminal(hasCode);
+      setCodeBlocks(parsed.codeBlocks);
+      setActiveCodeBlockIndex(0);
+      setTerminalView(previewDocument ? "preview" : parsed.codeBlocks.length > 0 ? "code" : "commands");
       
       if (parsed.codeBlocks.length > 0) {
         setExtractedCode(parsed.codeBlocks[0].code);
         setCodeLanguage(parsed.codeBlocks[0].language);
+      } else {
+        setExtractedCode("");
+        setCodeLanguage("javascript");
       }
       
       setTerminalCommands(parsed.commands);
       const nextMessages: Message[] = [...updated, { role: "assistant", content: message }];
       setMessages(nextMessages);
-      await persistSession(nextMessages, session?.id ?? activeSessionId);
+      await persistSession(nextMessages, session?.id ?? currentSessionId);
       
       // TTS
       if (autoPlayAudio && window.speechSynthesis) {
@@ -480,10 +951,13 @@ export default function Home() {
 
   const handleClear = () => { 
     setMessages([]); 
-    setActiveSessionId(null);
+    updateActiveSessionId(null);
     setShowTerminal(false);
     setExtractedCode("");
     setCodeLanguage("javascript");
+    setCodeBlocks([]);
+    setActiveCodeBlockIndex(0);
+    setTerminalView("code");
     setTerminalCommands([]);
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -495,15 +969,16 @@ export default function Home() {
   const handleUndo = () => {
     if (messages.length < 2) return;
     const newMessages = messages.slice(0, -2);
+    const currentSessionId = activeSessionIdRef.current;
     setMessages(newMessages);
     syncTerminalFromMessages(newMessages);
-    if (activeSessionId && newMessages.length > 0) {
-      void persistSession(newMessages, activeSessionId).catch((error) => {
+    if (currentSessionId && newMessages.length > 0) {
+      void persistSession(newMessages, currentSessionId).catch((error) => {
         console.error("Failed to persist updated chat after undo:", error);
       });
     }
-    if (activeSessionId && newMessages.length === 0) {
-      setActiveSessionId(null);
+    if (currentSessionId && newMessages.length === 0) {
+      updateActiveSessionId(null);
     }
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -538,19 +1013,72 @@ export default function Home() {
   };
 
   const handleCopy = async () => {
+    const codeToCopy = activeCodeBlock?.code ?? extractedCode;
+
+    if (!codeToCopy) {
+      return;
+    }
+
     try {
       if (isElectron) {
-        await clipboard.write(extractedCode);
+        await clipboard.write(codeToCopy);
       } else {
-        await navigator.clipboard.writeText(extractedCode);
+        await navigator.clipboard.writeText(codeToCopy);
       }
 
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopiedTarget("code");
+      setTimeout(() => setCopiedTarget(null), 2000);
     } catch (error) {
       console.error("Failed to copy code:", error);
     }
   };
+
+  const handleCopyAllCode = async () => {
+    const codeToCopy = formatAllCodeBlocksForCopy(codeBlocks);
+
+    if (!codeToCopy) {
+      return;
+    }
+
+    try {
+      if (isElectron) {
+        await clipboard.write(codeToCopy);
+      } else {
+        await navigator.clipboard.writeText(codeToCopy);
+      }
+
+      setCopiedTarget("all-code");
+      setTimeout(() => setCopiedTarget(null), 2000);
+    } catch (error) {
+      console.error("Failed to copy code:", error);
+    }
+  };
+
+  const handleCopyCommands = async () => {
+    const commandsToCopy = formatCommandsForCopy(terminalCommands);
+
+    if (!commandsToCopy) {
+      return;
+    }
+
+    try {
+      if (isElectron) {
+        await clipboard.write(commandsToCopy);
+      } else {
+        await navigator.clipboard.writeText(commandsToCopy);
+      }
+
+      setCopiedTarget("commands");
+      setTimeout(() => setCopiedTarget(null), 2000);
+    } catch (error) {
+      console.error("Failed to copy commands:", error);
+    }
+  };
+
+  const activeCodeBlock = codeBlocks[activeCodeBlockIndex] ?? null;
+  const previewDocument = buildPreviewDocument(codeBlocks);
+  const hasPreview = Boolean(previewDocument);
+  const canShowCode = Boolean(activeCodeBlock);
 
   // ── Loading state while checking localStorage ──
   if (!startScreenChecked) {
@@ -914,12 +1442,13 @@ export default function Home() {
               className="w-[420px] border-l border-border/50 bg-card/80 backdrop-blur-xl flex flex-col flex-shrink-0"
             >
               <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-foreground">
-                    {extractedCode && terminalCommands.length > 0 ? "Code & Commands" : extractedCode ? "Code" : "Commands"}
-                  </span>
-                  {codeLanguage && (
-                    <span className="px-2 py-0.5 rounded-md bg-primary/15 text-primary text-xs font-mono">{codeLanguage}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-medium text-foreground">Workspace Preview</span>
+                  {activeCodeBlock?.language && (
+                    <span className="px-2 py-0.5 rounded-md bg-primary/15 text-primary text-xs font-mono">{activeCodeBlock.language}</span>
+                  )}
+                  {codeBlocks.length > 1 && (
+                    <span className="px-2 py-0.5 rounded-md bg-muted text-muted-foreground text-[11px] font-medium">{activeCodeBlockIndex + 1}/{codeBlocks.length}</span>
                   )}
                 </div>
                 <Button variant="ghost" size="icon" onClick={() => setShowTerminal(false)} className="h-7 w-7 text-muted-foreground hover:text-foreground">
@@ -927,33 +1456,132 @@ export default function Home() {
                 </Button>
               </div>
               <div className="flex-1 overflow-y-auto p-5">
-                {extractedCode && (
-                  <div className="mb-4">
-                    <div className="rounded-xl bg-background border border-border p-4 overflow-x-auto max-h-[350px]">
-                      <pre className="font-mono text-xs leading-relaxed text-foreground whitespace-pre-wrap">{extractedCode}</pre>
-                    </div>
-                    <Button onClick={handleCopy} variant="surface" size="sm" className="mt-3 gap-1.5">
-                      {copied ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copied!</> : <><Copy className="w-3.5 h-3.5" /> Copy Code</>}
-                    </Button>
+                {(hasPreview || canShowCode || terminalCommands.length > 0) && (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {hasPreview && (
+                      <Button
+                        variant={terminalView === "preview" ? "default" : "surface"}
+                        size="sm"
+                        className="h-7 px-3 text-xs"
+                        onClick={() => setTerminalView("preview")}
+                      >
+                        Preview
+                      </Button>
+                    )}
+                    {canShowCode && (
+                      <Button
+                        variant={terminalView === "code" ? "default" : "surface"}
+                        size="sm"
+                        className="h-7 px-3 text-xs"
+                        onClick={() => setTerminalView("code")}
+                      >
+                        Code
+                      </Button>
+                    )}
+                    {terminalCommands.length > 0 && (
+                      <Button
+                        variant={terminalView === "commands" ? "default" : "surface"}
+                        size="sm"
+                        className="h-7 px-3 text-xs"
+                        onClick={() => setTerminalView("commands")}
+                      >
+                        Commands
+                      </Button>
+                    )}
                   </div>
                 )}
-                
-                {terminalCommands.length > 0 && (
-                  <div>
-                    <div className="text-xs font-semibold text-primary mb-2 uppercase tracking-wider">Terminal Commands</div>
-                    {terminalCommands.map((cmd, i) => (
-                      <div key={i} className="mb-2 font-mono text-xs text-foreground bg-background/50 p-3 rounded-lg border-l-2 border-primary">
-                        <span className="text-primary/70">$ </span>{cmd}
-                      </div>
+
+                {codeBlocks.length > 1 && (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    {codeBlocks.map((block, index) => (
+                      <Button
+                        key={`${block.language}-${index}`}
+                        variant={index === activeCodeBlockIndex ? "default" : "surface"}
+                        size="sm"
+                        className="h-7 max-w-[120px] px-3 text-xs"
+                        onClick={() => {
+                          setActiveCodeBlockIndex(index);
+                          setExtractedCode(block.code);
+                          setCodeLanguage(block.language);
+                        }}
+                      >
+                        <span className="truncate">{block.language || `block ${index + 1}`}</span>
+                      </Button>
                     ))}
                   </div>
                 )}
+
+                {terminalView === "preview" && hasPreview && (
+                  <div className="mb-4">
+                    <div className="mb-2 flex items-center justify-between">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Live Preview</div>
+                        <p className="mt-1 text-xs text-muted-foreground">Rendered sandbox for previewable web code blocks.</p>
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+                      <iframe
+                        title="Generated code preview"
+                        sandbox="allow-scripts"
+                        srcDoc={previewDocument ?? undefined}
+                        className="h-[360px] w-full bg-white"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {terminalView === "code" && activeCodeBlock && (
+                  <div className="mb-4">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Code Preview</div>
+                        <p className="mt-1 text-xs text-muted-foreground">Readable, line-numbered preview similar to an artifact/code pane.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {codeBlocks.length > 1 && (
+                          <Button onClick={handleCopyAllCode} variant="surface" size="sm" className="gap-1.5">
+                            {copiedTarget === "all-code" ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copied All</> : <><Copy className="w-3.5 h-3.5" /> Copy All</>}
+                          </Button>
+                        )}
+                        <Button onClick={handleCopy} variant="surface" size="sm" className="gap-1.5">
+                          {copiedTarget === "code" ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copied!</> : <><Copy className="w-3.5 h-3.5" /> Copy Code</>}
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-xl border border-border bg-background">
+                      <div className="flex items-center justify-between border-b border-border/70 px-4 py-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+                        <span>{activeCodeBlock.language || "code"}</span>
+                        <span>{activeCodeBlock.code.split("\n").length} lines</span>
+                      </div>
+                      <pre className="max-h-[420px] overflow-auto py-3 font-mono text-xs leading-relaxed">{renderLineNumberedCode(activeCodeBlock.code, activeCodeBlock.language)}</pre>
+                    </div>
+                  </div>
+                )}
                 
-                {!extractedCode && terminalCommands.length === 0 && (
+                {terminalView === "commands" && terminalCommands.length > 0 && (
+                  <div>
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Terminal Commands</div>
+                      <Button onClick={handleCopyCommands} variant="surface" size="sm" className="gap-1.5">
+                        {copiedTarget === "commands" ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copied!</> : <><Copy className="w-3.5 h-3.5" /> Copy Commands</>}
+                      </Button>
+                    </div>
+                    <p className="mb-3 text-xs text-muted-foreground">Review commands before running them in your real terminal.</p>
+                    <div>
+                      {terminalCommands.map((cmd, i) => (
+                        <div key={i} className="mb-2 font-mono text-xs text-foreground bg-background/50 p-3 rounded-lg border-l-2 border-primary">
+                          <span className="text-primary/70">$ </span>{cmd}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {!canShowCode && terminalCommands.length === 0 && !hasPreview && (
                   <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
                     <span className="text-4xl mb-4 opacity-30">📟</span>
-                    <p className="font-medium mb-2">No code blocks found</p>
-                    <p className="text-xs opacity-60">Ask the AI to provide code wrapped in markdown blocks</p>
+                    <p className="font-medium mb-2">No previewable code found</p>
+                    <p className="text-xs opacity-60">Ask the AI to provide code wrapped in markdown blocks or terminal commands.</p>
                   </div>
                 )}
               </div>
@@ -967,7 +1595,7 @@ export default function Home() {
 
       {/* Toast Notification */}
       <AnimatePresence>
-        {copied && (
+        {copiedTarget && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -975,7 +1603,9 @@ export default function Home() {
             className="fixed bottom-6 right-6 bg-green-600 text-white px-5 py-3 rounded-xl shadow-lg flex items-center gap-3 z-50"
           >
             <Check className="w-5 h-5" />
-            <span className="font-medium">Code copied to clipboard!</span>
+            <span className="font-medium">
+              {copiedTarget === "commands" ? "Commands copied to clipboard!" : copiedTarget === "all-code" ? "All code blocks copied to clipboard!" : "Code copied to clipboard!"}
+            </span>
           </motion.div>
         )}
       </AnimatePresence>

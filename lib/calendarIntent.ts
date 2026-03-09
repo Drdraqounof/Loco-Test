@@ -1,8 +1,14 @@
 import { prisma } from "@/lib/prisma";
 
-const CALENDAR_INTENT_PATTERN = /\b(schedule|add|create|book|set up|put|plan)\b[\s\S]*\b(calendar|meeting|appointment|event|reminder|call|lunch|dinner)\b|\b(on my calendar|to my calendar|in my calendar)\b/i;
+const CALENDAR_INTENT_PATTERN = /\b(schedule|add|create|book|set[- ]?up|put|plan|remind(?: me)?(?: to)?|reminder|alarm|appointment|meeting|event|calendar)\b|\b(on my calendar|to my calendar|in my calendar)\b/i;
 const AFFIRMATIVE_PATTERN = /^(yes|yep|yeah|confirm|do it|go ahead|please do|sounds good|add it|create it)\b/i;
 const DRAFT_MARKER = "Google Calendar draft ready.";
+const CALENDAR_CLARIFICATION_MARKERS = [
+  "I need a bit more detail before I can add that to Google Calendar.",
+  "I understood this as a calendar request",
+  "I didn't read that as a calendar request.",
+  "I couldn't confidently parse the event time.",
+];
 
 export interface CalendarDraftInput {
   title: string;
@@ -49,6 +55,138 @@ export function isCalendarConfirmationReply(text: string) {
 export function previousAssistantAskedToConfirm(messages: Array<{ role: string; content: string }>) {
   const previousAssistant = [...messages].reverse().find((message) => message.role === "assistant");
   return previousAssistant?.content.includes(DRAFT_MARKER) ?? false;
+}
+
+export function previousAssistantAskedCalendarClarification(messages: Array<{ role: string; content: string }>) {
+  const previousAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  if (!previousAssistant) {
+    return false;
+  }
+
+  return CALENDAR_CLARIFICATION_MARKERS.some((marker) => previousAssistant.content.includes(marker));
+}
+
+function normalizeWhitespace(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function buildIsoLocalString(year: number, month: number, day: number, hours: number, minutes: number) {
+  const paddedMonth = String(month).padStart(2, "0");
+  const paddedDay = String(day).padStart(2, "0");
+  const paddedHours = String(hours).padStart(2, "0");
+  const paddedMinutes = String(minutes).padStart(2, "0");
+
+  return `${year}-${paddedMonth}-${paddedDay}T${paddedHours}:${paddedMinutes}:00`;
+}
+
+function addMinutesToIsoString(isoString: string, minutesToAdd: number) {
+  const startDate = new Date(isoString);
+  if (Number.isNaN(startDate.getTime())) {
+    return null;
+  }
+
+  startDate.setMinutes(startDate.getMinutes() + minutesToAdd);
+  const year = startDate.getFullYear();
+  const month = startDate.getMonth() + 1;
+  const day = startDate.getDate();
+  const hours = startDate.getHours();
+  const minutes = startDate.getMinutes();
+
+  return buildIsoLocalString(year, month, day, hours, minutes);
+}
+
+function extractHeuristicTitle(message: string) {
+  const normalized = normalizeWhitespace(message);
+  const patterns = [
+    /(?:reminder|event|appointment|meeting)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
+    /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:for|about)?\s*(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
+    /(?:for)\s+(.+?)(?=\s+(?:on|at|around)\b|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) {
+      const title = match[1].replace(/^(?:a|an|the)\s+/i, "").trim();
+      if (title) {
+        return title;
+      }
+    }
+  }
+
+  return "Reminder";
+}
+
+function parseExplicitDateTimeIntent(message: string, timeZone: string): ParsedCalendarIntent | null {
+  const normalized = normalizeWhitespace(message);
+  const dateMatch = normalized.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+  const timeMatch = normalized.match(/\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+
+  if (!dateMatch) {
+    return null;
+  }
+
+  if (!timeMatch) {
+    return {
+      intent: "create_event",
+      needsClarification: true,
+      missingFields: ["time"],
+      clarificationQuestion: "What time should I use for that reminder?",
+    };
+  }
+
+  const month = Number(dateMatch[1]);
+  const day = Number(dateMatch[2]);
+  const rawYear = Number(dateMatch[3]);
+  const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+
+  let hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2] || "0");
+  const meridiem = timeMatch[3]?.toLowerCase();
+
+  if (meridiem === "pm" && hours < 12) {
+    hours += 12;
+  }
+  if (meridiem === "am" && hours === 12) {
+    hours = 0;
+  }
+
+  if (
+    Number.isNaN(month) ||
+    Number.isNaN(day) ||
+    Number.isNaN(year) ||
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  const startIso = buildIsoLocalString(year, month, day, hours, minutes);
+  const endIso = addMinutesToIsoString(startIso, 60);
+
+  if (!endIso) {
+    return null;
+  }
+
+  return {
+    intent: "create_event",
+    needsClarification: false,
+    event: {
+      title: extractHeuristicTitle(normalized),
+      description: null,
+      location: null,
+      startIso,
+      endIso,
+      timeZone,
+    },
+  };
 }
 
 export function formatDraftConfirmation(draft: {
@@ -119,43 +257,58 @@ export async function parseCalendarIntent(params: {
   timeZone: string;
   nowIso: string;
 }) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      temperature: 0,
-      max_tokens: 350,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You extract calendar event details from a user request. Return JSON only. If the request is not about creating a calendar event, return {\"intent\":\"none\",\"needsClarification\":false}. For relative dates, resolve from the provided current timestamp and timezone. Default duration to 60 minutes if none is given. Use ISO-8601 strings for startIso and endIso. If required scheduling details are missing, return needsClarification true with missingFields and a short clarificationQuestion.",
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            nowIso: params.nowIso,
-            timeZone: params.timeZone,
-            request: params.message,
-          }),
-        },
-      ],
-    }),
-  });
+  const heuristicResult = parseExplicitDateTimeIntent(params.message, params.timeZone);
 
-  if (!response.ok) {
-    throw new Error(`Calendar intent parsing failed with ${response.status}`);
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${params.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        temperature: 0,
+        max_tokens: 350,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You extract calendar event details from a user request. Return JSON only. If the request is not about creating a calendar event, return {\"intent\":\"none\",\"needsClarification\":false}. For relative dates, resolve from the provided current timestamp and timezone. Default duration to 60 minutes if none is given. Use ISO-8601 strings for startIso and endIso. If required scheduling details are missing, return needsClarification true with missingFields and a short clarificationQuestion.",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              nowIso: params.nowIso,
+              timeZone: params.timeZone,
+              request: params.message,
+            }),
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Calendar intent parsing failed with ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) {
+      throw new Error("Calendar intent parsing returned no content");
+    }
+
+    const parsed = extractJsonObject(content) as ParsedCalendarIntent;
+    if ((parsed.intent !== "create_event" || parsed.needsClarification || !parsed.event) && heuristicResult) {
+      return heuristicResult;
+    }
+
+    return parsed;
+  } catch (error) {
+    if (heuristicResult) {
+      return heuristicResult;
+    }
+
+    throw error;
   }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("Calendar intent parsing returned no content");
-  }
-
-  return extractJsonObject(content) as ParsedCalendarIntent;
 }

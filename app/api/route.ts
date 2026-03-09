@@ -13,6 +13,7 @@ import {
   isCalendarConfirmationReply,
   looksLikeCalendarIntent,
   parseCalendarIntent,
+  previousAssistantAskedCalendarClarification,
   previousAssistantAskedToConfirm,
   savePendingDraft,
 } from "@/lib/calendarIntent";
@@ -146,6 +147,25 @@ function formatRememberedEventsMessage(
       return `- ${event.title} on ${formatter.format(event.startIso)}${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
     })
     .join("\n")}`;
+}
+
+function fallbackCalendarTitleFromRequest(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const patterns = [
+    /(?:reminder|event|appointment|meeting)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
+    /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:for|about)?\s*(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
+    /(?:for)\s+(.+?)(?=\s+(?:on|at|around)\b|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const candidate = match?.[1]?.replace(/^(?:a|an|the)\s+/i, "").trim();
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return "Reminder";
 }
 
 export async function POST(request: NextRequest) {
@@ -289,7 +309,16 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (looksLikeCalendarIntent(latestUserMessage)) {
+    if (previousAssistantAskedToConfirm(messages)) {
+      return NextResponse.json({
+        success: true,
+        message:
+          "I still have a Google Calendar draft waiting. Reply with \"yes\" to add it, \"no\" to cancel it, or restate the event details if you want me to prepare a revised draft.",
+        audio: null,
+      });
+    }
+
+    if (looksLikeCalendarIntent(latestUserMessage) || previousAssistantAskedCalendarClarification(messages)) {
       const connection = await getStoredCalendarConnection();
 
       if (!connection) {
@@ -338,8 +367,13 @@ export async function POST(request: NextRequest) {
           });
         }
 
+        const eventTitle =
+          typeof parsedIntent.event.title === "string" && parsedIntent.event.title.trim().length > 0
+            ? parsedIntent.event.title.trim()
+            : fallbackCalendarTitleFromRequest(latestUserMessage);
+
         const draft = await savePendingDraft({
-          title: parsedIntent.event.title,
+          title: eventTitle,
           description: parsedIntent.event.description,
           location: parsedIntent.event.location,
           startIso: parsedIntent.event.startIso,

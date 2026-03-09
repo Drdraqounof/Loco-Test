@@ -2,6 +2,18 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import {
+  ArrowLeft,
+  CalendarDays,
+  CheckCircle2,
+  FlaskConical,
+  Link2,
+  LogOut,
+  Mic2,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 
 interface CalendarStatus {
@@ -9,6 +21,77 @@ interface CalendarStatus {
   connected: boolean;
   email: string | null;
   redirectUri?: string | null;
+}
+
+interface TabButtonProps {
+  active: boolean;
+  label: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+}
+
+interface ToggleCardProps {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}
+
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
+      <path
+        d="M21.8 12.23c0-.72-.06-1.25-.2-1.8H12v3.61h5.64c-.11.9-.73 2.25-2.11 3.16l-.02.12 3.01 2.28.21.02c1.94-1.75 3.07-4.31 3.07-7.39Z"
+        fill="#4285F4"
+      />
+      <path
+        d="M12 22c2.76 0 5.08-.89 6.77-2.39l-3.22-2.42c-.86.59-2.02 1-3.55 1-2.7 0-4.99-1.75-5.81-4.17l-.12.01-3.13 2.37-.04.11A10.24 10.24 0 0 0 12 22Z"
+        fill="#34A853"
+      />
+      <path
+        d="M6.19 14.02A6.08 6.08 0 0 1 5.85 12c0-.7.12-1.38.33-2.02l-.01-.13L3.01 7.45l-.1.04A9.88 9.88 0 0 0 1.8 12c0 1.62.4 3.15 1.11 4.51l3.28-2.49Z"
+        fill="#FBBC05"
+      />
+      <path
+        d="M12 5.81c1.93 0 3.23.81 3.97 1.49l2.9-2.76C17.07 2.92 14.76 2 12 2a10.24 10.24 0 0 0-9.1 5.49l3.25 2.49C7.01 7.56 9.3 5.81 12 5.81Z"
+        fill="#EA4335"
+      />
+    </svg>
+  );
+}
+
+function TabButton({ active, label, icon, onClick }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex items-center gap-2 rounded-full border px-4 py-2 text-xs font-semibold uppercase tracking-[0.18em] transition-all ${
+        active
+          ? "border-primary/50 bg-primary/15 text-foreground shadow-[0_0_30px_hsl(var(--primary)/0.15)]"
+          : "border-border/60 bg-background/40 text-muted-foreground hover:border-primary/30 hover:bg-card/70 hover:text-foreground"
+      }`}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function ToggleCard({ title, description, checked, onChange }: ToggleCardProps) {
+  return (
+    <label className="flex cursor-pointer items-start gap-4 rounded-2xl border border-border/70 bg-card/70 px-5 py-4 transition-all hover:border-primary/25 hover:bg-card/90">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-1 h-4 w-4 accent-[hsl(var(--primary))]"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold text-foreground">{title}</div>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>
+      </div>
+    </label>
+  );
 }
 
 export default function SettingsPage() {
@@ -41,9 +124,8 @@ export default function SettingsPage() {
     }
   };
 
-  // Load settings from localStorage on mount
   useEffect(() => {
-    const savedVoice = localStorage.getItem("selectedVoice") as VoiceKey || "echo";
+    const savedVoice = (localStorage.getItem("selectedVoice") as VoiceKey) || "echo";
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
@@ -52,7 +134,7 @@ export default function SettingsPage() {
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
-    loadCalendarStatus();
+    void loadCalendarStatus();
   }, []);
 
   useEffect(() => {
@@ -67,10 +149,9 @@ export default function SettingsPage() {
 
     setCalendarMessage(messageMap[googleCalendarParam] || null);
     setSettingsTab("integrations");
-    loadCalendarStatus();
+    void loadCalendarStatus();
   }, []);
 
-  // Save settings to localStorage
   const handleVoiceChange = (newVoice: VoiceKey) => {
     setVoice(newVoice);
     localStorage.setItem("selectedVoice", newVoice);
@@ -112,513 +193,282 @@ export default function SettingsPage() {
     }
   };
 
+  const voiceDescriptions: Record<VoiceKey, string> = {
+    alloy: "Balanced and clean for everyday coding help.",
+    echo: "A sharper, more futuristic delivery for deeper sessions.",
+    fable: "A warmer tone for conversational walkthroughs.",
+  };
+
   return (
-    <div style={{
-      height: "100vh",
-      display: "flex",
-      flexDirection: "column",
-      background: "linear-gradient(135deg, #0a0e27 0%, #16213e 100%)",
-      fontFamily: "'Inter', 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif",
-      color: theme.textColor,
-    }}>
-      {/* Header */}
-      <div style={{
-        padding: "24px",
-        borderBottom: `1px solid ${theme.borderColor}20`,
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-      }}>
-        <h1 style={{
-          margin: 0,
-          fontSize: "24px",
-          fontWeight: 700,
-        }}>
-          ⚙️ Settings
-        </h1>
-        <button
-          onClick={() => router.back()}
-          style={{
-            background: `linear-gradient(135deg, ${theme.accentColor}40 0%, ${theme.accentColor}20 100%)`,
-            border: `1px solid ${theme.accentColor}60`,
-            color: theme.textColor,
-            padding: "8px 16px",
-            borderRadius: "6px",
-            cursor: "pointer",
-            fontSize: "14px",
-            fontWeight: 600,
-            transition: "all 0.2s ease",
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background = `linear-gradient(135deg, ${theme.accentColor}60 0%, ${theme.accentColor}40 100%)`;
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background = `linear-gradient(135deg, ${theme.accentColor}40 0%, ${theme.accentColor}20 100%)`;
-          }}
-        >
-          ← Back
-        </button>
-      </div>
-
-      {/* Content */}
-      <div style={{
-        flex: 1,
-        overflow: "auto",
-        padding: "0",
-      }}>
-        {/* Tabs */}
-        <div style={{
-          borderBottom: `1px solid ${theme.borderColor}20`,
-          padding: "12px 24px",
-          display: "flex",
-          gap: "8px",
-          background: `${theme.borderColor}10`,
-        }}>
-          <button
-            onClick={() => setSettingsTab("voice")}
-            style={{
-              background: settingsTab === "voice" ? `${theme.accentColor}30` : "transparent",
-              border: `1px solid ${settingsTab === "voice" ? theme.accentColor : theme.borderColor}30`,
-              color: theme.textColor,
-              padding: "10px 20px",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "13px",
-              fontWeight: 600,
-              transition: "all 0.2s ease",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            🎤 Voice
-          </button>
-          <button
-            onClick={() => setSettingsTab("experimental")}
-            style={{
-              background: settingsTab === "experimental" ? `${theme.accentColor}30` : "transparent",
-              border: `1px solid ${settingsTab === "experimental" ? theme.accentColor : theme.borderColor}30`,
-              color: theme.textColor,
-              padding: "10px 20px",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "13px",
-              fontWeight: 600,
-              transition: "all 0.2s ease",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            🧪 Experimental
-          </button>
-          <button
-            onClick={() => setSettingsTab("integrations")}
-            style={{
-              background: settingsTab === "integrations" ? `${theme.accentColor}30` : "transparent",
-              border: `1px solid ${settingsTab === "integrations" ? theme.accentColor : theme.borderColor}30`,
-              color: theme.textColor,
-              padding: "10px 20px",
-              borderRadius: "6px",
-              cursor: "pointer",
-              fontSize: "13px",
-              fontWeight: 600,
-              transition: "all 0.2s ease",
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            📅 Integrations
-          </button>
-        </div>
-
-        {/* Voice Tab */}
-        {settingsTab === "voice" && (
-          <div style={{ padding: "40px 24px", maxWidth: "600px" }}>
-            <h2 style={{
-              fontSize: "18px",
-              fontWeight: 600,
-              marginBottom: "24px",
-              marginTop: 0,
-            }}>
-              Voice Selection
-            </h2>
-            <p style={{
-              fontSize: "14px",
-              color: theme.textColor,
-              opacity: 0.7,
-              marginBottom: "24px",
-              lineHeight: "1.6",
-            }}>
-              Choose your preferred voice for text-to-speech responses. The AI will respond using your selected voice.
-            </p>
-
-            <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
-              gap: "12px",
-              marginBottom: "32px",
-            }}>
-              {(["alloy", "echo", "fable"] as VoiceKey[]).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => handleVoiceChange(v)}
-                  style={{
-                    padding: "16px",
-                    background: voice === v
-                      ? `linear-gradient(135deg, ${theme.accentColor}40 0%, ${theme.accentColor}20 100%)`
-                      : `${theme.borderColor}15`,
-                    border: `2px solid ${voice === v ? theme.accentColor : theme.borderColor}30`,
-                    color: theme.textColor,
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    fontSize: "14px",
-                    fontWeight: 600,
-                    transition: "all 0.2s ease",
-                    textAlign: "center",
-                  }}
-                  onMouseEnter={(e) => {
-                    const btn = e.currentTarget as HTMLButtonElement;
-                    if (voice !== v) {
-                      btn.style.borderColor = `${theme.accentColor}60`;
-                      btn.style.background = `${theme.borderColor}25`;
-                    }
-                  }}
-                  onMouseLeave={(e) => {
-                    const btn = e.currentTarget as HTMLButtonElement;
-                    if (voice !== v) {
-                      btn.style.borderColor = `${theme.borderColor}30`;
-                      btn.style.background = `${theme.borderColor}15`;
-                    }
-                  }}
-                >
-                  {voice === v && "✓ "}
-                  {v.charAt(0).toUpperCase() + v.slice(1)}
-                </button>
-              ))}
+    <div
+      className="min-h-screen overflow-hidden bg-background text-foreground"
+      style={{
+        background:
+          "radial-gradient(circle at top left, rgba(99, 102, 241, 0.16), transparent 28%), radial-gradient(circle at top right, rgba(14, 165, 233, 0.12), transparent 24%), linear-gradient(180deg, #050816 0%, #0b1220 100%)",
+      }}
+    >
+      <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-6 sm:px-6 lg:px-8">
+        <header className="rounded-[28px] border border-border/60 bg-card/70 px-6 py-5 shadow-[0_24px_80px_rgba(2,6,23,0.45)] backdrop-blur-xl">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-3">
+              <div className="inline-flex items-center gap-2 rounded-full border border-primary/25 bg-primary/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-primary">
+                <Sparkles className="h-3.5 w-3.5" />
+                Loco Control Center
+              </div>
+              <div>
+                <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Settings</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
+                  Tune Loco&apos;s voice, control experimental behavior, and connect your Google account so calendar requests can move from chat into real events.
+                </p>
+              </div>
             </div>
 
-            <div style={{
-              padding: "16px",
-              background: `${theme.accentColor}15`,
-              borderRadius: "8px",
-              borderLeft: `4px solid ${theme.accentColor}`,
-            }}>
-              <p style={{
-                fontSize: "13px",
-                color: theme.textColor,
-                margin: 0,
-                opacity: 0.8,
-              }}>
-                💡 <strong>Pro Tip:</strong> Try different voices to find the one you prefer most
-              </p>
-            </div>
+            <Button variant="surface" onClick={() => router.back()} className="gap-2 self-start rounded-full px-4">
+              <ArrowLeft className="h-4 w-4" />
+              Back
+            </Button>
           </div>
-        )}
+        </header>
 
-        {settingsTab === "integrations" && (
-          <div style={{ padding: "40px 24px", maxWidth: "700px" }}>
-            <h2 style={{
-              fontSize: "18px",
-              fontWeight: 600,
-              marginBottom: "8px",
-              marginTop: 0,
-            }}>
-              Google Calendar
-            </h2>
-            <p style={{
-              fontSize: "14px",
-              color: theme.textColor,
-              opacity: 0.7,
-              marginBottom: "24px",
-              lineHeight: "1.6",
-            }}>
-              Connect Google Calendar so Loco can prepare and add events after you confirm them in chat.
-            </p>
+        <main className="mt-6 grid flex-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+          <aside className="rounded-[28px] border border-border/60 bg-card/65 p-4 backdrop-blur-xl">
+            <div className="mb-4 px-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">Sections</p>
+            </div>
+            <div className="flex flex-row flex-wrap gap-2 lg:flex-col">
+              <TabButton
+                active={settingsTab === "voice"}
+                label="Voice"
+                icon={<Mic2 className="h-4 w-4" />}
+                onClick={() => setSettingsTab("voice")}
+              />
+              <TabButton
+                active={settingsTab === "integrations"}
+                label="Integrations"
+                icon={<Link2 className="h-4 w-4" />}
+                onClick={() => setSettingsTab("integrations")}
+              />
+              <TabButton
+                active={settingsTab === "experimental"}
+                label="Experimental"
+                icon={<FlaskConical className="h-4 w-4" />}
+                onClick={() => setSettingsTab("experimental")}
+              />
+            </div>
+          </aside>
 
-            {calendarMessage && (
-              <div style={{
-                marginBottom: "16px",
-                padding: "14px 16px",
-                background: `${theme.accentColor}15`,
-                border: `1px solid ${theme.accentColor}35`,
-                borderRadius: "8px",
-                fontSize: "13px",
-              }}>
-                {calendarMessage}
+          <section className="rounded-[28px] border border-border/60 bg-card/65 p-6 shadow-[0_24px_80px_rgba(2,6,23,0.35)] backdrop-blur-xl sm:p-8">
+            {settingsTab === "voice" && (
+              <div className="space-y-8">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Voice Profile</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-tight">Choose how Loco sounds</h2>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+                    Pick the voice personality that should be used when Loco speaks replies. Your selection is saved locally and reused the next time the app opens.
+                  </p>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  {(["alloy", "echo", "fable"] as VoiceKey[]).map((currentVoice) => {
+                    const selected = voice === currentVoice;
+                    return (
+                      <button
+                        key={currentVoice}
+                        type="button"
+                        onClick={() => handleVoiceChange(currentVoice)}
+                        className={`rounded-[24px] border px-5 py-5 text-left transition-all ${
+                          selected
+                            ? "border-primary/50 bg-primary/12 shadow-[0_0_40px_hsl(var(--primary)/0.15)]"
+                            : "border-border/70 bg-background/35 hover:border-primary/25 hover:bg-background/55"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-lg font-semibold capitalize text-foreground">{currentVoice}</span>
+                          {selected && <CheckCircle2 className="h-5 w-5 text-primary" />}
+                        </div>
+                        <p className="mt-3 text-sm leading-6 text-muted-foreground">{voiceDescriptions[currentVoice]}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="rounded-2xl border border-primary/20 bg-primary/10 px-5 py-4">
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Voice playback still depends on browser or Electron audio availability. The selected profile changes tone choice and keeps the interface consistent with your preferred mode.
+                  </p>
+                </div>
               </div>
             )}
 
-            <div style={{
-              padding: "20px",
-              background: `${theme.borderColor}10`,
-              borderRadius: "12px",
-              border: `1px solid ${theme.borderColor}20`,
-              marginBottom: "20px",
-            }}>
-              <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "10px" }}>
-                Status
+            {settingsTab === "integrations" && (
+              <div className="space-y-8">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Google Calendar</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-tight">Sign in and connect your calendar</h2>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+                    Loco uses Google OAuth so you can sign in with your Google account and let the assistant draft events, ask for approval, and then write them into your calendar.
+                  </p>
+                </div>
+
+                {calendarMessage && (
+                  <div className="rounded-2xl border border-primary/25 bg-primary/10 px-5 py-4 text-sm leading-6 text-foreground">
+                    {calendarMessage}
+                  </div>
+                )}
+
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+                  <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          <CalendarDays className="h-3.5 w-3.5" />
+                          Account Access
+                        </div>
+                        <h3 className="mt-4 text-xl font-semibold">Sign in with Google</h3>
+                        <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
+                          Connect once, then ask Loco to schedule lunches, meetings, reminders, or appointments directly from chat. Loco will always ask for confirmation before creating the event.
+                        </p>
+                      </div>
+                      <div
+                        className="flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10 text-primary"
+                        style={{ boxShadow: `0 0 40px ${theme.accentColor}22` }}
+                      >
+                        <ShieldCheck className="h-6 w-6" />
+                      </div>
+                    </div>
+
+                    <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Config</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">
+                          {calendarLoading ? "Checking" : calendarStatus.configured ? "Ready" : "Missing"}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Connection</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">
+                          {calendarLoading ? "Loading" : calendarStatus.connected ? "Connected" : "Not connected"}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Scope</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">Calendar events</div>
+                      </div>
+                    </div>
+
+                    {calendarStatus.email && (
+                      <div className="mt-5 flex items-center gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-900 shadow-sm">
+                          <GoogleMark />
+                        </div>
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-200/80">Connected account</div>
+                          <div className="mt-1 font-semibold">{calendarStatus.email}</div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="mt-6 flex flex-wrap gap-3">
+                      <Button
+                        onClick={handleConnectCalendar}
+                        disabled={!calendarStatus.configured || calendarLoading}
+                        className="rounded-full border border-white/15 bg-white text-slate-900 shadow-[0_18px_40px_rgba(255,255,255,0.14)] hover:bg-white/90 disabled:border-white/10 disabled:bg-white/70 disabled:text-slate-500"
+                      >
+                        <GoogleMark />
+                        {calendarStatus.connected ? "Reconnect Google" : "Sign in with Google"}
+                      </Button>
+
+                      <Button
+                        variant="surface"
+                        onClick={handleDisconnectCalendar}
+                        disabled={!calendarStatus.connected || calendarLoading}
+                        className="rounded-full px-5"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        Disconnect
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-5">
+                    <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">What happens next</div>
+                      <div className="mt-4 space-y-4 text-sm leading-6 text-muted-foreground">
+                        <div>
+                          <div className="font-semibold text-foreground">1. Sign in</div>
+                          <p>Use the Google button to authorize Loco against your own account.</p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">2. Ask naturally</div>
+                          <p>Try something like “Schedule lunch with Sam tomorrow at 1 PM for 45 minutes.”</p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">3. Confirm</div>
+                          <p>Loco drafts the event, shows the parsed details, and only creates it after you reply yes.</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">OAuth Details</div>
+                      <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+                        <div>
+                          <div className="font-semibold text-foreground">Redirect URI</div>
+                          <p className="mt-1 break-all font-mono text-xs leading-5 text-muted-foreground">
+                            {calendarStatus.redirectUri || "Not available"}
+                          </p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">Environment</div>
+                          <p className="mt-1">{calendarStatus.configured ? "OAuth variables detected in your environment." : "Google OAuth environment variables are still missing or invalid."}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
+            )}
 
-              {calendarLoading ? (
-                <div style={{ fontSize: "13px", opacity: 0.7 }}>Checking Google Calendar connection...</div>
-              ) : (
-                <>
-                  <div style={{ fontSize: "13px", marginBottom: "8px", opacity: 0.85 }}>
-                    Configuration: {calendarStatus.configured ? "Ready" : "Missing Google OAuth environment variables"}
-                  </div>
-                  <div style={{ fontSize: "13px", marginBottom: "8px", opacity: 0.85 }}>
-                    Connection: {calendarStatus.connected ? "Connected" : "Not connected"}
-                  </div>
-                  {calendarStatus.email && (
-                    <div style={{ fontSize: "13px", marginBottom: "8px", opacity: 0.85 }}>
-                      Google account: {calendarStatus.email}
-                    </div>
-                  )}
-                  {calendarStatus.redirectUri && (
-                    <div style={{ fontSize: "12px", opacity: 0.6 }}>
-                      Redirect URI: {calendarStatus.redirectUri}
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "24px" }}>
-              <button
-                onClick={handleConnectCalendar}
-                disabled={!calendarStatus.configured || calendarLoading}
-                style={{
-                  background: calendarStatus.configured ? `linear-gradient(135deg, ${theme.accentColor}40 0%, ${theme.accentColor}20 100%)` : `${theme.borderColor}15`,
-                  border: `1px solid ${calendarStatus.configured ? theme.accentColor : theme.borderColor}40`,
-                  color: theme.textColor,
-                  padding: "12px 18px",
-                  borderRadius: "8px",
-                  cursor: !calendarStatus.configured || calendarLoading ? "not-allowed" : "pointer",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  opacity: !calendarStatus.configured || calendarLoading ? 0.5 : 1,
-                }}
-              >
-                Connect Google Calendar
-              </button>
-
-              <button
-                onClick={handleDisconnectCalendar}
-                disabled={!calendarStatus.connected || calendarLoading}
-                style={{
-                  background: `${theme.borderColor}15`,
-                  border: `1px solid ${theme.borderColor}30`,
-                  color: theme.textColor,
-                  padding: "12px 18px",
-                  borderRadius: "8px",
-                  cursor: !calendarStatus.connected || calendarLoading ? "not-allowed" : "pointer",
-                  fontSize: "13px",
-                  fontWeight: 700,
-                  opacity: !calendarStatus.connected || calendarLoading ? 0.5 : 1,
-                }}
-              >
-                Disconnect
-              </button>
-            </div>
-
-            <div style={{
-              padding: "16px",
-              background: `${theme.accentColor}15`,
-              borderRadius: "8px",
-              borderLeft: `4px solid ${theme.accentColor}`,
-            }}>
-              <p style={{ fontSize: "13px", color: theme.textColor, margin: 0, opacity: 0.85, lineHeight: "1.6" }}>
-                Example: after connecting, you can say "Schedule lunch with Sam tomorrow at 1 PM for 45 minutes". Loco will draft the event details, ask for confirmation, and only add it to Google Calendar after you reply "yes".
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Experimental Tab */}
-        {settingsTab === "experimental" && (
-          <div style={{ padding: "40px 24px", maxWidth: "600px" }}>
-            <h2 style={{
-              fontSize: "18px",
-              fontWeight: 600,
-              marginBottom: "8px",
-              marginTop: 0,
-            }}>
-              Experimental Features
-            </h2>
-            <p style={{
-              fontSize: "13px",
-              color: theme.textColor,
-              opacity: 0.6,
-              marginBottom: "32px",
-              lineHeight: "1.6",
-            }}>
-              These features are still in development. Enable or disable them as needed.
-            </p>
-
-            <div style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "20px",
-            }}>
-              {/* Auto-play TTS */}
-              <label style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                cursor: "pointer",
-                padding: "16px",
-                background: `${theme.borderColor}10`,
-                borderRadius: "8px",
-                border: `1px solid ${theme.borderColor}20`,
-                transition: "all 0.2s ease",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}20`;
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}10`;
-              }}>
-                <input
-                  type="checkbox"
-                  checked={autoPlayAudio}
-                  onChange={(e) => handleAutoPlayChange(e.target.checked)}
-                  style={{
-                    width: "20px",
-                    height: "20px",
-                    cursor: "pointer",
-                    accentColor: theme.accentColor,
-                  }}
-                />
-                <div style={{ flex: 1 }}>
-                  <div style={{
-                    fontSize: "14px",
-                    fontWeight: 600,
-                    marginBottom: "4px",
-                  }}>
-                    Auto-play TTS Responses
-                  </div>
-                  <div style={{
-                    fontSize: "12px",
-                    color: theme.textColor,
-                    opacity: 0.6,
-                  }}>
-                    Automatically play voice responses when the AI replies
-                  </div>
+            {settingsTab === "experimental" && (
+              <div className="space-y-8">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Experimental</p>
+                  <h2 className="mt-2 text-2xl font-semibold tracking-tight">Feature switches</h2>
+                  <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
+                    These features are still evolving. You can enable or disable them here without touching app code or local storage manually.
+                  </p>
                 </div>
-              </label>
 
-              {/* Ping Pong Easter Egg */}
-              <label style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                cursor: "pointer",
-                padding: "16px",
-                background: `${theme.borderColor}10`,
-                borderRadius: "8px",
-                border: `1px solid ${theme.borderColor}20`,
-                transition: "all 0.2s ease",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}20`;
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}10`;
-              }}>
-                <input
-                  type="checkbox"
-                  checked={enablePingPong}
-                  onChange={(e) => handlePingPongChange(e.target.checked)}
-                  style={{
-                    width: "20px",
-                    height: "20px",
-                    cursor: "pointer",
-                    accentColor: theme.accentColor,
-                  }}
-                />
-                <div style={{ flex: 1 }}>
-                  <div style={{
-                    fontSize: "14px",
-                    fontWeight: 600,
-                    marginBottom: "4px",
-                  }}>
-                    Enable Ping Pong Easter Egg
-                  </div>
-                  <div style={{
-                    fontSize: "12px",
-                    color: theme.textColor,
-                    opacity: 0.6,
-                  }}>
-                    Type "ping pong" in chat to play a game
-                  </div>
+                <div className="space-y-4">
+                  <ToggleCard
+                    title="Auto-play TTS responses"
+                    description="Automatically speak Loco responses after each assistant reply."
+                    checked={autoPlayAudio}
+                    onChange={handleAutoPlayChange}
+                  />
+                  <ToggleCard
+                    title="Enable Ping Pong easter egg"
+                    description="Type “ping pong” in chat to launch the hidden game route."
+                    checked={enablePingPong}
+                    onChange={handlePingPongChange}
+                  />
+                  <ToggleCard
+                    title="Enable Chess game"
+                    description="Type “chess” in chat to open the chess game route."
+                    checked={enableChess}
+                    onChange={handleChessChange}
+                  />
                 </div>
-              </label>
 
-              {/* Chess Game */}
-              <label style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                cursor: "pointer",
-                padding: "16px",
-                background: `${theme.borderColor}10`,
-                borderRadius: "8px",
-                border: `1px solid ${theme.borderColor}20`,
-                transition: "all 0.2s ease",
-              }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}20`;
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLLabelElement).style.background = `${theme.borderColor}10`;
-              }}>
-                <input
-                  type="checkbox"
-                  checked={enableChess}
-                  onChange={(e) => handleChessChange(e.target.checked)}
-                  style={{
-                    width: "20px",
-                    height: "20px",
-                    cursor: "pointer",
-                    accentColor: theme.accentColor,
-                  }}
-                />
-                <div style={{ flex: 1 }}>
-                  <div style={{
-                    fontSize: "14px",
-                    fontWeight: 600,
-                    marginBottom: "4px",
-                  }}>
-                    Enable Chess Game
-                  </div>
-                  <div style={{
-                    fontSize: "12px",
-                    color: theme.textColor,
-                    opacity: 0.6,
-                  }}>
-                    Type "chess" in chat to play a game
-                  </div>
+                <div className="rounded-2xl border border-primary/20 bg-primary/10 px-5 py-4">
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    Experimental features may change behavior between updates. They are safe to toggle, but you should expect iteration here before these controls become part of the stable product surface.
+                  </p>
                 </div>
-              </label>
-            </div>
-
-            <div style={{
-              marginTop: "32px",
-              padding: "16px",
-              background: `${theme.accentColor}15`,
-              borderRadius: "8px",
-              borderLeft: `4px solid ${theme.accentColor}`,
-            }}>
-              <p style={{
-                fontSize: "13px",
-                color: theme.textColor,
-                margin: 0,
-                opacity: 0.8,
-              }}>
-                🧪 <strong>Note:</strong> These features may change or be removed in future updates
-              </p>
-            </div>
-          </div>
-        )}
+              </div>
+            )}
+          </section>
+        </main>
       </div>
     </div>
   );
