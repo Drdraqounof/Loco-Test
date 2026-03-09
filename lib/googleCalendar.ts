@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { rememberCalendarEvent } from "@/lib/chatMemory";
 import { prisma } from "@/lib/prisma";
 
 const GOOGLE_CALENDAR_SCOPES = [
@@ -133,6 +134,8 @@ export async function createCalendarEvent(input: {
   endIso: string;
   timeZone: string;
   origin?: string;
+  rawRequest?: string | null;
+  sessionId?: string | null;
 }) {
   const client = await getAuthorizedCalendarClient(input.origin);
   if (!client) {
@@ -154,6 +157,19 @@ export async function createCalendarEvent(input: {
         timeZone: input.timeZone,
       },
     },
+  });
+
+  await rememberCalendarEvent({
+    googleEventId: event.data.id || null,
+    sessionId: input.sessionId ?? null,
+    title: input.title,
+    description: input.description,
+    location: input.location,
+    startIso: input.startIso,
+    endIso: input.endIso,
+    timeZone: input.timeZone,
+    htmlLink: event.data.htmlLink || null,
+    rawRequest: input.rawRequest ?? null,
   });
 
   return event.data;

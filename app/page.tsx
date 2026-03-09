@@ -28,6 +28,14 @@ interface ChatSession {
   updatedAt: string;
 }
 
+interface ChatSessionsResponse {
+  sessions: ChatSession[];
+}
+
+interface ChatSessionResponse {
+  session: ChatSession;
+}
+
 // ── Data ──
 const ALL_PROMPTS = [
   { emoji: "📝", text: "Build a React Todo List component with add, delete, and localStorage persistence" },
@@ -137,52 +145,156 @@ export default function Home() {
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
-  const saveSessions = (sessions: ChatSession[]) => {
-    localStorage.setItem("chatSessions", JSON.stringify(sessions));
-    setChatSessions(sessions);
+  const upsertSessionState = (session: ChatSession) => {
+    setChatSessions((previousSessions) => {
+      const withoutCurrent = previousSessions.filter((entry) => entry.id !== session.id);
+      return [session, ...withoutCurrent].sort(
+        (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+      );
+    });
   };
 
-  const saveCurrentSession = (msgs: Message[]) => {
-    if (msgs.length === 0) return;
-    const sessions: ChatSession[] = JSON.parse(localStorage.getItem("chatSessions") || "[]");
-    const title = msgs.find(m => m.role === "user")?.content.slice(0, 50) || "Untitled";
-    const now = new Date().toISOString();
-    if (activeSessionId) {
-      const updated = sessions.map(s =>
-        s.id === activeSessionId ? { ...s, messages: msgs, title, updatedAt: now } : s
-      );
-      saveSessions(updated);
-    } else {
-      const id = `session_${Date.now()}`;
-      setActiveSessionId(id);
-      saveSessions([{ id, title, messages: msgs, createdAt: now, updatedAt: now }, ...sessions]);
+  const syncTerminalFromMessages = (sessionMessages: Message[]) => {
+    const lastAssistant = [...sessionMessages].reverse().find((message) => message.role === "assistant");
+
+    if (lastAssistant) {
+      const parsed = parseResponse(lastAssistant.content);
+      setShowTerminal(parsed.codeBlocks.length > 0 || parsed.commands.length > 0);
+      if (parsed.codeBlocks.length > 0) {
+        setExtractedCode(parsed.codeBlocks[0].code);
+        setCodeLanguage(parsed.codeBlocks[0].language);
+      } else {
+        setExtractedCode("");
+        setCodeLanguage("javascript");
+      }
+      setTerminalCommands(parsed.commands);
+      return;
+    }
+
+    setShowTerminal(false);
+    setExtractedCode("");
+    setCodeLanguage("javascript");
+    setTerminalCommands([]);
+  };
+
+  const applySession = (session: ChatSession) => {
+    setMessages(session.messages);
+    setActiveSessionId(session.id);
+    setShowHistory(false);
+    syncTerminalFromMessages(session.messages);
+  };
+
+  const persistSession = async (msgs: Message[], preferredSessionId?: string | null) => {
+    if (msgs.length === 0) {
+      return null;
+    }
+
+    const title = msgs.find((message) => message.role === "user")?.content.slice(0, 50) || "Untitled";
+    const response = await fetch("/api/chat-sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: preferredSessionId ?? undefined,
+        title,
+        messages: msgs,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to save chat session: ${response.status}`);
+    }
+
+    const data = (await response.json()) as ChatSessionResponse;
+    upsertSessionState(data.session);
+    setActiveSessionId(data.session.id);
+    return data.session;
+  };
+
+  const readLegacySessions = () => {
+    const sessions: ChatSession[] = [];
+
+    try {
+      const savedSessions = localStorage.getItem("chatSessions");
+      if (savedSessions) {
+        const parsedSessions = JSON.parse(savedSessions);
+        if (Array.isArray(parsedSessions)) {
+          sessions.push(...parsedSessions);
+        }
+      }
+    } catch (error) {
+      console.error("Failed to read legacy chat sessions:", error);
+    }
+
+    try {
+      const savedHistory = localStorage.getItem("conversationHistory");
+      if (savedHistory) {
+        const parsedHistory = JSON.parse(savedHistory);
+        if (Array.isArray(parsedHistory) && parsedHistory.length > 0) {
+          sessions.unshift({
+            id: `legacy-${Date.now()}`,
+            title: parsedHistory.find((message: Message) => message.role === "user")?.content.slice(0, 50) || "Imported chat",
+            messages: parsedHistory,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Failed to read legacy conversation history:", error);
+    }
+
+    return sessions.filter((session) => Array.isArray(session.messages) && session.messages.length > 0);
+  };
+
+  const loadSessionsFromServer = async () => {
+    const response = await fetch("/api/chat-sessions", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Failed to load chat sessions: ${response.status}`);
+    }
+
+    let data = (await response.json()) as ChatSessionsResponse;
+
+    if (data.sessions.length === 0) {
+      const legacySessions = readLegacySessions();
+      if (legacySessions.length > 0) {
+        for (const legacySession of legacySessions) {
+          await persistSession(legacySession.messages, null);
+        }
+        localStorage.removeItem("chatSessions");
+        localStorage.removeItem("conversationHistory");
+
+        const refreshedResponse = await fetch("/api/chat-sessions", { cache: "no-store" });
+        if (refreshedResponse.ok) {
+          data = (await refreshedResponse.json()) as ChatSessionsResponse;
+        }
+      }
+    }
+
+    setChatSessions(data.sessions);
+    if (data.sessions.length > 0) {
+      applySession(data.sessions[0]);
     }
   };
 
   const loadSession = (session: ChatSession) => {
-    setMessages(session.messages);
-    setActiveSessionId(session.id);
-    setShowHistory(false);
-    const lastAssistant = [...session.messages].reverse().find(m => m.role === "assistant");
-    if (lastAssistant) {
-      const parsed = parseResponse(lastAssistant.content);
-      setShowTerminal(parsed.codeBlocks.length > 0 || parsed.commands.length > 0);
-      if (parsed.codeBlocks.length > 0) { setExtractedCode(parsed.codeBlocks[0].code); setCodeLanguage(parsed.codeBlocks[0].language); }
-      setTerminalCommands(parsed.commands);
-    } else {
-      setShowTerminal(false); setExtractedCode(""); setTerminalCommands([]);
+    applySession(session);
+  };
+
+  const deleteSession = async (id: string) => {
+    const response = await fetch(`/api/chat-sessions/${id}`, { method: "DELETE" });
+    if (!response.ok) {
+      throw new Error(`Failed to delete chat session: ${response.status}`);
+    }
+
+    setChatSessions((previousSessions) => previousSessions.filter((session) => session.id !== id));
+    if (activeSessionId === id) {
+      setActiveSessionId(null);
+      setMessages([]);
+      syncTerminalFromMessages([]);
     }
   };
 
-  const deleteSession = (id: string) => {
-    const sessions: ChatSession[] = JSON.parse(localStorage.getItem("chatSessions") || "[]");
-    const updated = sessions.filter(s => s.id !== id);
-    saveSessions(updated);
-    if (activeSessionId === id) { setActiveSessionId(null); }
-  };
-
   const startNewChat = () => {
-    if (messages.length > 0) saveCurrentSession(messages);
     setMessages([]);
     setActiveSessionId(null);
     setShowTerminal(false); setExtractedCode(""); setTerminalCommands([]);
@@ -233,32 +345,19 @@ export default function Home() {
   // ── Initialize ──
   useEffect(() => {
     setIsMounted(true);
-    // Load chat sessions
-    const savedSessions = localStorage.getItem("chatSessions");
-    if (savedSessions) { try { setChatSessions(JSON.parse(savedSessions)); } catch {} }
     // Load settings from localStorage
     const savedVoice = localStorage.getItem("selectedVoice") as VoiceKey || "echo";
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
     
-    // Load conversation history
-    try {
-      const savedHistory = localStorage.getItem("conversationHistory");
-      if (savedHistory) {
-        const parsedHistory = JSON.parse(savedHistory);
-        if (Array.isArray(parsedHistory) && parsedHistory.length > 0) {
-          setMessages(parsedHistory);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to load conversation history:", error);
-    }
-    
     setVoice(savedVoice);
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
+    void loadSessionsFromServer().catch((error) => {
+      console.error("Failed to load persisted chat sessions:", error);
+    });
     
     // Initialize speech synthesis
     if (window.speechSynthesis) {
@@ -269,13 +368,6 @@ export default function Home() {
   // ── Chat logic ──
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
   
-  useEffect(() => { 
-    if (isMounted && messages.length > 0) {
-      localStorage.setItem("conversationHistory", JSON.stringify(messages));
-      saveCurrentSession(messages);
-    }
-  }, [messages, isMounted]);
-
   // Sync speech recognition input
   useEffect(() => {
     if (userMessage) setInput(userMessage);
@@ -341,7 +433,8 @@ export default function Home() {
         return;
       }
 
-      const result = await callAIAPI(updated, voice);
+      const session = await persistSession(updated, activeSessionId);
+      const result = await callAIAPI(updated, voice, session?.id ?? activeSessionId);
       
       if (!result.success || !result.data) {
         setLoading(false);
@@ -360,7 +453,9 @@ export default function Home() {
       }
       
       setTerminalCommands(parsed.commands);
-      setMessages([...updated, { role: "assistant", content: message }]);
+      const nextMessages: Message[] = [...updated, { role: "assistant", content: message }];
+      setMessages(nextMessages);
+      await persistSession(nextMessages, session?.id ?? activeSessionId);
       
       // TTS
       if (autoPlayAudio && window.speechSynthesis) {
@@ -385,7 +480,7 @@ export default function Home() {
 
   const handleClear = () => { 
     setMessages([]); 
-    localStorage.removeItem("conversationHistory"); 
+    setActiveSessionId(null);
     setShowTerminal(false);
     setExtractedCode("");
     setCodeLanguage("javascript");
@@ -401,25 +496,14 @@ export default function Home() {
     if (messages.length < 2) return;
     const newMessages = messages.slice(0, -2);
     setMessages(newMessages);
-    // Refresh terminal with the new last assistant message, or clear if none
-    const lastAssistant = [...newMessages].reverse().find(m => m.role === "assistant");
-    if (lastAssistant) {
-      const parsed = parseResponse(lastAssistant.content);
-      const hasCode = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
-      setShowTerminal(hasCode);
-      if (parsed.codeBlocks.length > 0) {
-        setExtractedCode(parsed.codeBlocks[0].code);
-        setCodeLanguage(parsed.codeBlocks[0].language);
-      } else {
-        setExtractedCode("");
-        setCodeLanguage("javascript");
-      }
-      setTerminalCommands(parsed.commands);
-    } else {
-      setShowTerminal(false);
-      setExtractedCode("");
-      setCodeLanguage("javascript");
-      setTerminalCommands([]);
+    syncTerminalFromMessages(newMessages);
+    if (activeSessionId && newMessages.length > 0) {
+      void persistSession(newMessages, activeSessionId).catch((error) => {
+        console.error("Failed to persist updated chat after undo:", error);
+      });
+    }
+    if (activeSessionId && newMessages.length === 0) {
+      setActiveSessionId(null);
     }
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -689,7 +773,12 @@ export default function Home() {
                       </div>
                       <button
                         className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all flex-shrink-0 mt-0.5"
-                        onClick={e => { e.stopPropagation(); deleteSession(session.id); }}
+                        onClick={e => {
+                          e.stopPropagation();
+                          void deleteSession(session.id).catch((error) => {
+                            console.error("Failed to delete chat session:", error);
+                          });
+                        }}
                         title="Delete"
                       >
                         <Trash2 className="w-3.5 h-3.5" />

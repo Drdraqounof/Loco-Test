@@ -52,3 +52,60 @@ model PendingCalendarDraft {
 
   @@index([createdAt])
 }
+
+model ConversationSession {
+  id             String                @id @default(cuid())
+  source         String                @default("loco")
+  title          String
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+  messages       ConversationMessage[]
+  calendarEvents CalendarEventMemory[]
+
+  @@index([source, updatedAt])
+}
+
+model ConversationMessage {
+  id        String              @id @default(cuid())
+  sessionId String
+  role      String
+  content   String              @db.Text
+  position  Int
+  createdAt DateTime            @default(now())
+  session   ConversationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, position])
+  @@index([sessionId, createdAt])
+}
+
+model CalendarEventMemory {
+  id           String               @id @default(cuid())
+  source       String               @default("loco")
+  googleEventId String?             @unique
+  sessionId    String?
+  title        String
+  description  String?              @db.Text
+  location     String?
+  startIso     DateTime
+  endIso       DateTime
+  timeZone     String
+  htmlLink     String?              @db.Text
+  rawRequest   String?              @db.Text
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  session      ConversationSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([source, startIso])
+}
+
+model AssistantMemory {
+  id                String   @id @default(cuid())
+  source            String   @default("loco")
+  kind              String   @default("fact")
+  content           String   @db.Text
+  normalizedContent String   @unique @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([source, updatedAt])
+}

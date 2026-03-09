@@ -17,6 +17,19 @@ import {
   savePendingDraft,
 } from "@/lib/calendarIntent";
 import {
+  buildPersistentMemoryContext,
+  listRememberedCalendarEvents,
+} from "@/lib/chatMemory";
+import {
+  buildAssistantMemoryContext,
+  extractMemoryContent,
+  formatAssistantMemoryRecall,
+  inferImplicitMemoryCandidate,
+  isExplicitMemoryRequest,
+  looksLikeMemoryRecallQuestion,
+  rememberAssistantFact,
+} from "@/lib/assistantMemory";
+import {
   createCalendarEvent,
   getStoredCalendarConnection,
 } from "@/lib/googleCalendar";
@@ -102,6 +115,39 @@ function isCancellationReply(text: string) {
   return /^(no|cancel|never mind|dont|don't add it|stop)\b/i.test(text.trim());
 }
 
+function looksLikeCalendarMemoryQuestion(text: string) {
+  return /(what|which|show|list|remember|remind me)[\s\S]*(calendar|event|events|meeting|meetings|appointment|appointments|scheduled|schedule)/i.test(
+    text.trim()
+  );
+}
+
+function formatRememberedEventsMessage(
+  events: Array<{
+    title: string;
+    startIso: Date;
+    endIso: Date;
+    timeZone: string;
+    location?: string | null;
+    htmlLink?: string | null;
+  }>
+) {
+  if (events.length === 0) {
+    return "I don't have any saved calendar events in memory yet.";
+  }
+
+  return `Here are the most recent calendar events I remember from Loco:\n\n${events
+    .map((event) => {
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        dateStyle: "full",
+        timeStyle: "short",
+        timeZone: event.timeZone,
+      });
+
+      return `- ${event.title} on ${formatter.format(event.startIso)}${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
+    })
+    .join("\n")}`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (!OPENAI_API_KEY) {
@@ -119,6 +165,7 @@ export async function POST(request: NextRequest) {
       topic = "general",
       voice = "alloy",
       timeZone = "UTC",
+      sessionId = null,
     } = await request.json();
 
     if (!messages || !Array.isArray(messages)) {
@@ -136,6 +183,44 @@ export async function POST(request: NextRequest) {
         { error: "Latest message must be a user message" },
         { status: 400 }
       );
+    }
+
+    if (looksLikeMemoryRecallQuestion(latestUserMessage)) {
+      return NextResponse.json({
+        success: true,
+        message: await formatAssistantMemoryRecall(),
+        audio: null,
+      });
+    }
+
+    if (isExplicitMemoryRequest(latestUserMessage)) {
+      const memoryContent = extractMemoryContent(latestUserMessage);
+
+      if (!memoryContent) {
+        return NextResponse.json({
+          success: true,
+          message: "Tell me what you want me to remember, for example: remember that I prefer short answers.",
+          audio: null,
+        });
+      }
+
+      await rememberAssistantFact(memoryContent, "explicit");
+
+      return NextResponse.json({
+        success: true,
+        message: `I'll remember that: ${memoryContent}`,
+        audio: null,
+      });
+    }
+
+    if (looksLikeCalendarMemoryQuestion(latestUserMessage)) {
+      const rememberedEvents = await listRememberedCalendarEvents(8);
+
+      return NextResponse.json({
+        success: true,
+        message: formatRememberedEventsMessage(rememberedEvents),
+        audio: null,
+      });
     }
 
     if (
@@ -161,6 +246,8 @@ export async function POST(request: NextRequest) {
           endIso: pendingDraft.endIso.toISOString(),
           timeZone: pendingDraft.timeZone,
           origin: request.nextUrl.origin,
+          rawRequest: pendingDraft.rawRequest,
+          sessionId: typeof sessionId === "string" ? sessionId : null,
         });
 
         await clearPendingDraft(pendingDraft.id);
@@ -276,11 +363,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const implicitMemoryCandidate = inferImplicitMemoryCandidate(latestUserMessage);
+    if (implicitMemoryCandidate) {
+      await rememberAssistantFact(implicitMemoryCandidate, "implicit");
+    }
+
     // Prepare for audio response
     let audioBase64 = null;
-    // Retrieve conversation history from database if user is logged in
-    let previousContext = "";
-    // (Removed localStorage logic. Use database or cache for history in future.)
+    const [previousContext, longTermMemoryContext] = await Promise.all([
+      buildPersistentMemoryContext(),
+      buildAssistantMemoryContext(),
+    ]);
 
     // Pre-scan code for common elements to help AI
     let codeSummary = "";
@@ -310,9 +403,9 @@ export async function POST(request: NextRequest) {
       userContext = `\nSTUDENT PROFILE:
 - Name: ${user.firstName} ${user.lastName || ""}
 - Email: ${user.email}
-- You're working with them as their personal coding mentor${previousContext}`;
+- You're working with them as their personal coding mentor${previousContext}${longTermMemoryContext}`;
     } else {
-      userContext = previousContext;
+      userContext = `${previousContext}${longTermMemoryContext}`;
     }
 
     const systemPrompt = `You are Loco, an intelligent, calm, and highly capable AI assistant — modelled after JARVIS — who helps users with everyday needs while also teaching programming, debugging code, and helping build software.

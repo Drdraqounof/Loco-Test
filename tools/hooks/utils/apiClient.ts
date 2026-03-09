@@ -82,7 +82,8 @@ export async function fetchWithRetry<T>(
  */
 export async function callAIAPI(
   messages: Array<{ role: string; content: string }>,
-  voice: string
+  voice: string,
+  sessionId?: string | null
 ): Promise<FetchResponse<{ message: string; audio?: string }>> {
   return fetchWithRetry("/api", {
     method: "POST",
@@ -90,6 +91,7 @@ export async function callAIAPI(
     body: JSON.stringify({
       messages,
       voice,
+      sessionId,
       language: "javascript",
       topic: "general",
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
