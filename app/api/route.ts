@@ -11,6 +11,7 @@ import {
   formatDraftConfirmation,
   getLatestPendingDraft,
   isCalendarConfirmationReply,
+  looksLikeCalendarClarificationFollowUp,
   looksLikeCalendarIntent,
   parseCalendarIntent,
   previousAssistantAskedCalendarClarification,
@@ -32,13 +33,16 @@ import {
 } from "@/lib/assistantMemory";
 import {
   createCalendarEvent,
+  deleteCalendarEvents,
   getStoredCalendarConnection,
+  listCalendarEvents,
 } from "@/lib/googleCalendar";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const AI_PROVIDER = process.env.AI_PROVIDER || "openai";
 const TTS_PROVIDER = process.env.TTS_PROVIDER || "openai";
+const LIVE_CALENDAR_DELETE_MARKER = "Google Calendar delete confirmation ready.";
 
 // Resource library with actual links
 const RESOURCES = {
@@ -168,6 +172,218 @@ function fallbackCalendarTitleFromRequest(text: string) {
   return "Reminder";
 }
 
+function normalizeWhitespace(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeLiveCalendarReadRequest(text: string) {
+  const normalized = normalizeWhitespace(text);
+  return /(what(?:'s| is)|show|list|tell me|how busy)[\s\S]*(calendar|calender|schedule|agenda|events?)/i.test(normalized)
+    || /(calendar|calender|schedule|agenda|events?)[\s\S]*(today|tomorrow|tonight|this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(normalized);
+}
+
+function looksLikeLiveCalendarDeleteRequest(text: string) {
+  const normalized = normalizeWhitespace(text);
+  return /(remove|delete|clear|cancel)[\s\S]*(event|events|meeting|meetings|appointment|appointments)/i.test(normalized)
+    && /(calendar|calender|schedule|agenda|today|tomorrow|tonight|this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(normalized);
+}
+
+function previousAssistantAskedLiveDeleteConfirmation(messages: Array<{ role: string; content: string }>) {
+  const previousAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  return previousAssistant?.content.includes(LIVE_CALENDAR_DELETE_MARKER) ?? false;
+}
+
+function getUserMessageBeforeLatestAssistant(messages: Array<{ role: string; content: string }>) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "assistant") {
+      for (let candidate = index - 1; candidate >= 0; candidate -= 1) {
+        if (messages[candidate]?.role === "user") {
+          return messages[candidate].content;
+        }
+      }
+      break;
+    }
+  }
+
+  return null;
+}
+
+function getTimeZoneOffsetString(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "longOffset",
+    year: "numeric",
+  });
+  const parts = formatter.formatToParts(date);
+  const timeZoneName = parts.find((part) => part.type === "timeZoneName")?.value;
+
+  if (!timeZoneName || timeZoneName === "GMT") {
+    return "Z";
+  }
+
+  const match = timeZoneName.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?$/);
+  if (!match) {
+    return "Z";
+  }
+
+  const [, sign, hours, minutes] = match;
+  return `${sign}${hours.padStart(2, "0")}:${(minutes || "00").padStart(2, "0")}`;
+}
+
+function getTimeZoneDateParts(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(date);
+
+  return {
+    weekday: parts.find((part) => part.type === "weekday")?.value.toLowerCase() || "",
+    year: Number(parts.find((part) => part.type === "year")?.value || "0"),
+    month: Number(parts.find((part) => part.type === "month")?.value || "0"),
+    day: Number(parts.find((part) => part.type === "day")?.value || "0"),
+  };
+}
+
+function addDaysInTimeZone(date: Date, timeZone: string, days: number) {
+  const shifted = new Date(date);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return getTimeZoneDateParts(shifted, timeZone);
+}
+
+function buildZonedIso(parts: { year: number; month: number; day: number }, hours: number, minutes: number, seconds: number, timeZone: string) {
+  const year = String(parts.year).padStart(4, "0");
+  const month = String(parts.month).padStart(2, "0");
+  const day = String(parts.day).padStart(2, "0");
+  const hour = String(hours).padStart(2, "0");
+  const minute = String(minutes).padStart(2, "0");
+  const second = String(seconds).padStart(2, "0");
+  const probe = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, Math.min(Math.max(hours, 0), 23), minutes, seconds));
+  const offset = getTimeZoneOffsetString(probe, timeZone);
+
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}${offset}`;
+}
+
+function resolveCalendarDayRange(text: string, timeZone: string, now: Date) {
+  const normalized = normalizeWhitespace(text).toLowerCase();
+  const weekdayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const current = getTimeZoneDateParts(now, timeZone);
+  const currentWeekdayIndex = weekdayNames.indexOf(current.weekday);
+
+  let label = "today";
+  let target = current;
+
+  if (/\btomorrow\b/.test(normalized)) {
+    label = "tomorrow";
+    target = addDaysInTimeZone(now, timeZone, 1);
+  } else if (/\btoday\b|\btonight\b/.test(normalized)) {
+    label = "today";
+    target = current;
+  } else {
+    const weekdayMatch = normalized.match(/\b(?:(this|next)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+    if (!weekdayMatch) {
+      return null;
+    }
+
+    const modifier = weekdayMatch[1] || "this";
+    const requestedWeekday = weekdayMatch[2];
+    const requestedIndex = weekdayNames.indexOf(requestedWeekday);
+    if (requestedIndex === -1 || currentWeekdayIndex === -1) {
+      return null;
+    }
+
+    let delta = (requestedIndex - currentWeekdayIndex + 7) % 7;
+    if (modifier === "next") {
+      delta = delta === 0 ? 7 : delta;
+    }
+
+    target = addDaysInTimeZone(now, timeZone, delta);
+    label = modifier === "next" ? `next ${requestedWeekday}` : requestedWeekday;
+  }
+
+  const endTarget = addDaysInTimeZone(new Date(Date.UTC(target.year, target.month - 1, target.day, 12, 0, 0)), timeZone, 1);
+
+  return {
+    label,
+    startIso: buildZonedIso(target, 0, 0, 0, timeZone),
+    endIso: buildZonedIso(endTarget, 0, 0, 0, timeZone),
+  };
+}
+
+function formatLiveCalendarEventsMessage(
+  events: Array<{
+    title: string;
+    startIso: string | null;
+    endIso: string | null;
+    isAllDay: boolean;
+    location?: string | null;
+    htmlLink?: string | null;
+  }>,
+  label: string,
+  timeZone: string
+) {
+  if (events.length === 0) {
+    return `Your Google Calendar looks clear for ${label}.`;
+  }
+
+  return `Here is your Google Calendar for ${label}:\n\n${events
+    .map((event) => {
+      if (!event.startIso) {
+        return `- ${event.title}`;
+      }
+
+      if (event.isAllDay) {
+        return `- ${event.title} (all day)${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
+      }
+
+      const start = new Date(event.startIso);
+      const end = event.endIso ? new Date(event.endIso) : null;
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeStyle: "short",
+        timeZone,
+      });
+
+      return `- ${event.title} from ${formatter.format(start)}${end ? ` to ${formatter.format(end)}` : ""}${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
+    })
+    .join("\n")}`;
+}
+
+function formatLiveCalendarDeleteConfirmation(
+  events: Array<{
+    title: string;
+    startIso: string | null;
+    endIso: string | null;
+    isAllDay: boolean;
+    location?: string | null;
+  }>,
+  label: string,
+  timeZone: string
+) {
+  return `${LIVE_CALENDAR_DELETE_MARKER}\n\nI found ${events.length} event${events.length === 1 ? "" : "s"} on ${label}:\n${events
+    .map((event) => {
+      if (!event.startIso) {
+        return `- ${event.title}`;
+      }
+
+      if (event.isAllDay) {
+        return `- ${event.title} (all day)`;
+      }
+
+      const start = new Date(event.startIso);
+      const end = event.endIso ? new Date(event.endIso) : null;
+      const formatter = new Intl.DateTimeFormat("en-US", {
+        timeStyle: "short",
+        timeZone,
+      });
+
+      return `- ${event.title} from ${formatter.format(start)}${end ? ` to ${formatter.format(end)}` : ""}${event.location ? ` at ${event.location}` : ""}`;
+    })
+    .join("\n")}\n\nReply with "yes" to delete them, or "no" to keep them.`;
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (!OPENAI_API_KEY) {
@@ -231,6 +447,134 @@ export async function POST(request: NextRequest) {
         message: `I'll remember that: ${memoryContent}`,
         audio: null,
       });
+    }
+
+    if (
+      previousAssistantAskedLiveDeleteConfirmation(messages) &&
+      isCalendarConfirmationReply(latestUserMessage)
+    ) {
+      const originalDeleteRequest = getUserMessageBeforeLatestAssistant(messages);
+
+      if (!originalDeleteRequest) {
+        return NextResponse.json({
+          success: true,
+          message: "I couldn't recover the pending delete request. Please ask me again which day to clear.",
+          audio: null,
+        });
+      }
+
+      const connection = await getStoredCalendarConnection();
+      if (!connection) {
+        return NextResponse.json({
+          success: true,
+          message: "Google Calendar is not connected yet. Open Settings, connect your Google account, then ask me again.",
+          audio: null,
+        });
+      }
+
+      const range = resolveCalendarDayRange(originalDeleteRequest, timeZone, new Date());
+      if (!range) {
+        return NextResponse.json({
+          success: true,
+          message: "I couldn't determine which day to clear. Please restate the request with a specific day.",
+          audio: null,
+        });
+      }
+
+      const events = await listCalendarEvents({
+        startIso: range.startIso,
+        endIso: range.endIso,
+        origin: request.nextUrl.origin,
+        limit: 250,
+      });
+
+      if (events.length === 0) {
+        return NextResponse.json({
+          success: true,
+          message: `There are no Google Calendar events left on ${range.label}.`,
+          audio: null,
+        });
+      }
+
+      await deleteCalendarEvents({
+        eventIds: events.map((event) => event.id),
+        origin: request.nextUrl.origin,
+      });
+
+      return NextResponse.json({
+        success: true,
+        message: `Deleted ${events.length} Google Calendar event${events.length === 1 ? "" : "s"} on ${range.label}.`,
+        audio: null,
+      });
+    }
+
+    if (
+      previousAssistantAskedLiveDeleteConfirmation(messages) &&
+      isCancellationReply(latestUserMessage)
+    ) {
+      return NextResponse.json({
+        success: true,
+        message: "Understood. I kept those Google Calendar events unchanged.",
+        audio: null,
+      });
+    }
+
+    if (looksLikeLiveCalendarDeleteRequest(latestUserMessage) || looksLikeLiveCalendarReadRequest(latestUserMessage)) {
+      const connection = await getStoredCalendarConnection();
+      if (!connection) {
+        return NextResponse.json({
+          success: true,
+          message: "I can do that with Google Calendar, but Google Calendar is not connected yet. Open Settings, connect your Google account, then ask me again.",
+          audio: null,
+        });
+      }
+
+      const range = resolveCalendarDayRange(latestUserMessage, timeZone, new Date());
+      if (!range) {
+        return NextResponse.json({
+          success: true,
+          message: "Tell me which day you want, for example: today, tomorrow, or Thursday.",
+          audio: null,
+        });
+      }
+
+      try {
+        const events = await listCalendarEvents({
+          startIso: range.startIso,
+          endIso: range.endIso,
+          origin: request.nextUrl.origin,
+          limit: 250,
+        });
+
+        if (looksLikeLiveCalendarDeleteRequest(latestUserMessage)) {
+          if (events.length === 0) {
+            return NextResponse.json({
+              success: true,
+              message: `I didn't find any Google Calendar events on ${range.label} to delete.`,
+              audio: null,
+            });
+          }
+
+          return NextResponse.json({
+            success: true,
+            message: formatLiveCalendarDeleteConfirmation(events, range.label, timeZone),
+            audio: null,
+          });
+        }
+
+        return NextResponse.json({
+          success: true,
+          message: formatLiveCalendarEventsMessage(events, range.label, timeZone),
+          audio: null,
+        });
+      } catch (error) {
+        console.error("Live Google Calendar query error:", error);
+        return NextResponse.json({
+          success: true,
+          message: "I couldn't reach Google Calendar for that request. Reconnect Google Calendar in Settings and try again.",
+          audio: null,
+        });
+      }
     }
 
     if (looksLikeCalendarMemoryQuestion(latestUserMessage)) {
@@ -318,7 +662,11 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (looksLikeCalendarIntent(latestUserMessage) || previousAssistantAskedCalendarClarification(messages)) {
+    const isCalendarClarificationFollowUp =
+      previousAssistantAskedCalendarClarification(messages) &&
+      looksLikeCalendarClarificationFollowUp(latestUserMessage);
+
+    if (looksLikeCalendarIntent(latestUserMessage) || isCalendarClarificationFollowUp) {
       const connection = await getStoredCalendarConnection();
 
       if (!connection) {

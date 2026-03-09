@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 
-const CALENDAR_INTENT_PATTERN = /\b(schedule|add|create|book|set[- ]?up|put|plan|remind(?: me)?(?: to)?|reminder|alarm|appointment|meeting|event|calendar)\b|\b(on my calendar|to my calendar|in my calendar)\b/i;
+const CALENDAR_NOUN_PATTERN = /\b(remind(?: me)?(?: to)?|reminder|alarm|appointment|meeting|event|calendar|call|lunch|dinner)\b|\b(on my calendar|to my calendar|in my calendar)\b/i;
+const CALENDAR_ACTION_WITH_CONTEXT_PATTERN = /\b(schedule|add|create|book|set[- ]?up|put|plan)\b/i;
+const CALENDAR_DATE_TIME_PATTERN = /\b(\d{1,2}\/\d{1,2}\/\d{2,4}|today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|weekend)|next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|around\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i;
 const AFFIRMATIVE_PATTERN = /^(yes|yep|yeah|confirm|do it|go ahead|please do|sounds good|add it|create it)\b/i;
 const DRAFT_MARKER = "Google Calendar draft ready.";
 const CALENDAR_CLARIFICATION_MARKERS = [
@@ -45,7 +47,7 @@ function extractJsonObject(text: string) {
 }
 
 export function looksLikeCalendarIntent(text: string) {
-  return CALENDAR_INTENT_PATTERN.test(text);
+  return CALENDAR_NOUN_PATTERN.test(text) || (CALENDAR_ACTION_WITH_CONTEXT_PATTERN.test(text) && CALENDAR_DATE_TIME_PATTERN.test(text));
 }
 
 export function isCalendarConfirmationReply(text: string) {
@@ -64,6 +66,11 @@ export function previousAssistantAskedCalendarClarification(messages: Array<{ ro
   }
 
   return CALENDAR_CLARIFICATION_MARKERS.some((marker) => previousAssistant.content.includes(marker));
+}
+
+export function looksLikeCalendarClarificationFollowUp(text: string) {
+  const normalized = normalizeWhitespace(text);
+  return CALENDAR_NOUN_PATTERN.test(normalized) || CALENDAR_DATE_TIME_PATTERN.test(normalized);
 }
 
 function normalizeWhitespace(text: string) {

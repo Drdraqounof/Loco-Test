@@ -142,6 +142,23 @@ export async function listRememberedCalendarEvents(limit = 10) {
   });
 }
 
+export async function deleteRememberedCalendarEventsByGoogleIds(googleEventIds: string[]) {
+  const ids = googleEventIds.filter(Boolean);
+
+  if (ids.length === 0) {
+    return { count: 0 };
+  }
+
+  return prisma.calendarEventMemory.deleteMany({
+    where: {
+      source: "loco",
+      googleEventId: {
+        in: ids,
+      },
+    },
+  });
+}
+
 function trimSnippet(text: string, maxLength = 180) {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) {

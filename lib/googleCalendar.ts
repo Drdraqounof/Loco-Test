@@ -1,5 +1,5 @@
 import { google } from "googleapis";
-import { rememberCalendarEvent } from "@/lib/chatMemory";
+import { deleteRememberedCalendarEventsByGoogleIds, rememberCalendarEvent } from "@/lib/chatMemory";
 import { prisma } from "@/lib/prisma";
 
 const GOOGLE_CALENDAR_SCOPES = [
@@ -173,4 +173,98 @@ export async function createCalendarEvent(input: {
   });
 
   return event.data;
+}
+
+export interface GoogleCalendarEventSummary {
+  id: string;
+  title: string;
+  description?: string | null;
+  location?: string | null;
+  htmlLink?: string | null;
+  status?: string | null;
+  startIso: string | null;
+  endIso: string | null;
+  isAllDay: boolean;
+}
+
+function mapGoogleEvent(event: {
+  id?: string | null;
+  summary?: string | null;
+  description?: string | null;
+  location?: string | null;
+  htmlLink?: string | null;
+  status?: string | null;
+  start?: { dateTime?: string | null; date?: string | null } | null;
+  end?: { dateTime?: string | null; date?: string | null } | null;
+}): GoogleCalendarEventSummary | null {
+  if (!event.id) {
+    return null;
+  }
+
+  return {
+    id: event.id,
+    title: event.summary || "Untitled event",
+    description: event.description || null,
+    location: event.location || null,
+    htmlLink: event.htmlLink || null,
+    status: event.status || null,
+    startIso: event.start?.dateTime || event.start?.date || null,
+    endIso: event.end?.dateTime || event.end?.date || null,
+    isAllDay: Boolean(event.start?.date && !event.start?.dateTime),
+  };
+}
+
+export async function listCalendarEvents(input: {
+  startIso: string;
+  endIso: string;
+  origin?: string;
+  query?: string;
+  limit?: number;
+}) {
+  const client = await getAuthorizedCalendarClient(input.origin);
+  if (!client) {
+    throw new Error("Google Calendar is not connected");
+  }
+
+  const response = await client.calendar.events.list({
+    calendarId: client.connection.calendarId,
+    timeMin: input.startIso,
+    timeMax: input.endIso,
+    singleEvents: true,
+    orderBy: "startTime",
+    q: input.query || undefined,
+    maxResults: input.limit ?? 100,
+  });
+
+  return (response.data.items || [])
+    .map((event) => mapGoogleEvent(event))
+    .filter((event): event is GoogleCalendarEventSummary => Boolean(event));
+}
+
+export async function deleteCalendarEvents(input: {
+  eventIds: string[];
+  origin?: string;
+}) {
+  const client = await getAuthorizedCalendarClient(input.origin);
+  if (!client) {
+    throw new Error("Google Calendar is not connected");
+  }
+
+  const eventIds = input.eventIds.filter(Boolean);
+  if (eventIds.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  for (const eventId of eventIds) {
+    await client.calendar.events.delete({
+      calendarId: client.connection.calendarId,
+      eventId,
+    });
+  }
+
+  await deleteRememberedCalendarEventsByGoogleIds(eventIds);
+
+  return {
+    deletedCount: eventIds.length,
+  };
 }

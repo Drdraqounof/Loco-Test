@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
-import { Settings, Trash2, Mic, Send, X, Copy, Check, Undo2, Play, Pause, Volume2, History, Plus, MessageSquare } from "lucide-react";
+import { Settings, Trash2, Mic, Send, X, Copy, Check, Undo2, Play, Pause, Volume2, History, Plus, MessageSquare, Maximize2, Minimize2 } from "lucide-react";
 import { useSpeechRecognition } from "@/tools/hooks/useSpeechRecognition";
 import { useAudioPlayer } from "@/tools/hooks/useAudioPlayer";
 import { useElectron } from "@/tools/hooks/useElectron";
@@ -109,8 +109,32 @@ function getCodeLanguageFamily(language: string) {
   return "plain";
 }
 
+function isCodePreviewBlock(block: CodeBlock) {
+  return getCodeLanguageFamily(block.language) !== "shell";
+}
+
 function isReactPreviewLanguage(language: string) {
   return ["jsx", "tsx", "javascriptreact", "typescriptreact"].includes(normalizeCodeLanguage(language));
+}
+
+function isLikelyReactPreviewBlock(block: CodeBlock) {
+  if (isReactPreviewLanguage(block.language)) {
+    return true;
+  }
+
+  const normalizedLanguage = normalizeCodeLanguage(block.language);
+  if (!["javascript", "js", "typescript", "ts"].includes(normalizedLanguage)) {
+    return false;
+  }
+
+  const source = block.code;
+  const hasReactImport = /from\s+["']react["']/.test(source) || /require\(["']react["']\)/.test(source);
+  const hasClientComponentHint = /["']use client["']/.test(source);
+  const hasHookUsage = /\buse(?:State|Effect|Ref|Reducer|Memo|Callback|Id|Transition|DeferredValue)\s*\(/.test(source);
+  const hasUppercaseComponent = /(?:function|const|let|var)\s+[A-Z][A-Za-z0-9_]*\s*(?:\(|=)/.test(source);
+  const hasJsxMarkup = /return\s*\(|<[A-Za-z][\w:-]*(?:\s|>|\/)/.test(source);
+
+  return (hasReactImport || hasClientComponentHint || hasHookUsage) && hasUppercaseComponent && hasJsxMarkup;
 }
 
 function escapeEmbeddedScript(code: string) {
@@ -186,7 +210,7 @@ function extractReactPreviewSource(source: string) {
 }
 
 function buildReactPreviewDocument(codeBlocks: CodeBlock[], css: string) {
-  const reactBlocks = codeBlocks.filter((block) => isReactPreviewLanguage(block.language));
+  const reactBlocks = codeBlocks.filter((block) => isLikelyReactPreviewBlock(block));
 
   if (reactBlocks.length === 0) {
     return null;
@@ -432,7 +456,7 @@ function buildPreviewDocument(codeBlocks: CodeBlock[]) {
     return reactPreviewDocument;
   }
 
-  if (htmlBlocks.length === 0 && cssBlocks.length === 0 && jsBlocks.length === 0) {
+  if (htmlBlocks.length === 0) {
     return null;
   }
 
@@ -471,40 +495,6 @@ function buildPreviewDocument(codeBlocks: CodeBlock[]) {
   </body>
 </html>`;
   }
-
-  return `<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      body {
-        margin: 0;
-        min-height: 100vh;
-        font-family: Inter, system-ui, sans-serif;
-        background: #020617;
-        color: #e2e8f0;
-        display: grid;
-        place-items: center;
-      }
-      .preview-shell {
-        width: min(720px, calc(100vw - 32px));
-        border-radius: 20px;
-        padding: 24px;
-        background: rgba(15, 23, 42, 0.92);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
-      }
-      ${css}
-    </style>
-  </head>
-  <body>
-    <div class="preview-shell">
-      <div id="app">Preview shell ready.</div>
-    </div>
-    <script>${script}<\/script>
-  </body>
-</html>`;
 }
 
 function renderLineNumberedCode(code: string, language: string) {
@@ -513,6 +503,18 @@ function renderLineNumberedCode(code: string, language: string) {
       <span className="select-none text-right text-[11px] text-muted-foreground/60">{index + 1}</span>
       <span className="whitespace-pre-wrap break-words text-foreground">{renderHighlightedLine(line || " ", language)}</span>
     </div>
+  ));
+}
+
+function renderCodeBlocks(blocks: CodeBlock[]) {
+  return blocks.map((block, index) => (
+    <section key={`${block.language}-${index}`} className={index > 0 ? "border-t border-border/70" : ""}>
+      <div className="flex items-center justify-between border-b border-border/70 px-4 py-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+        <span>{block.language || `block ${index + 1}`}</span>
+        <span>{block.code.split("\n").length} lines</span>
+      </div>
+      <pre className="overflow-x-auto py-3 font-mono text-xs leading-relaxed">{renderLineNumberedCode(block.code, block.language)}</pre>
+    </section>
   ));
 }
 
@@ -583,6 +585,7 @@ export default function Home() {
   const [activeCodeBlockIndex, setActiveCodeBlockIndex] = useState(0);
   const [terminalView, setTerminalView] = useState<"preview" | "code" | "commands">("code");
   const [terminalCommands, setTerminalCommands] = useState<string[]>([]);
+  const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState<Array<{ emoji: string; text: string }>>([]);
   const [lastAudioBase64, setLastAudioBase64] = useState<string | null>(null);
@@ -616,17 +619,18 @@ export default function Home() {
     if (lastAssistant) {
       const parsed = parseResponse(lastAssistant.content);
       const previewDocument = buildPreviewDocument(parsed.codeBlocks);
+      const previewableCodeBlocks = parsed.codeBlocks.filter(isCodePreviewBlock);
       setShowTerminal(parsed.codeBlocks.length > 0 || parsed.commands.length > 0);
       setCodeBlocks(parsed.codeBlocks);
       setActiveCodeBlockIndex(0);
-      if (parsed.codeBlocks.length > 0) {
-        setExtractedCode(parsed.codeBlocks[0].code);
-        setCodeLanguage(parsed.codeBlocks[0].language);
+      if (previewableCodeBlocks.length > 0) {
+        setExtractedCode(previewableCodeBlocks[0].code);
+        setCodeLanguage(previewableCodeBlocks[0].language);
       } else {
         setExtractedCode("");
         setCodeLanguage("javascript");
       }
-      setTerminalView(previewDocument ? "preview" : parsed.codeBlocks.length > 0 ? "code" : "commands");
+      setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
       setTerminalCommands(parsed.commands);
       return;
     }
@@ -908,16 +912,17 @@ export default function Home() {
       const message = result.data.message || "No response";
       const parsed = parseResponse(message);
       const previewDocument = buildPreviewDocument(parsed.codeBlocks);
+      const previewableCodeBlocks = parsed.codeBlocks.filter(isCodePreviewBlock);
       
       const hasCode = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
       setShowTerminal(hasCode);
       setCodeBlocks(parsed.codeBlocks);
       setActiveCodeBlockIndex(0);
-      setTerminalView(previewDocument ? "preview" : parsed.codeBlocks.length > 0 ? "code" : "commands");
+      setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
       
-      if (parsed.codeBlocks.length > 0) {
-        setExtractedCode(parsed.codeBlocks[0].code);
-        setCodeLanguage(parsed.codeBlocks[0].language);
+      if (previewableCodeBlocks.length > 0) {
+        setExtractedCode(previewableCodeBlocks[0].code);
+        setCodeLanguage(previewableCodeBlocks[0].language);
       } else {
         setExtractedCode("");
         setCodeLanguage("javascript");
@@ -1012,8 +1017,13 @@ export default function Home() {
     }
   };
 
+  const previewableCodeBlocks = codeBlocks.filter(isCodePreviewBlock);
+  const activeCodeBlock = previewableCodeBlocks[activeCodeBlockIndex] ?? null;
+
   const handleCopy = async () => {
-    const codeToCopy = activeCodeBlock?.code ?? extractedCode;
+    const codeToCopy = previewableCodeBlocks.length > 1
+      ? formatAllCodeBlocksForCopy(previewableCodeBlocks)
+      : activeCodeBlock?.code ?? extractedCode;
 
     if (!codeToCopy) {
       return;
@@ -1027,27 +1037,6 @@ export default function Home() {
       }
 
       setCopiedTarget("code");
-      setTimeout(() => setCopiedTarget(null), 2000);
-    } catch (error) {
-      console.error("Failed to copy code:", error);
-    }
-  };
-
-  const handleCopyAllCode = async () => {
-    const codeToCopy = formatAllCodeBlocksForCopy(codeBlocks);
-
-    if (!codeToCopy) {
-      return;
-    }
-
-    try {
-      if (isElectron) {
-        await clipboard.write(codeToCopy);
-      } else {
-        await navigator.clipboard.writeText(codeToCopy);
-      }
-
-      setCopiedTarget("all-code");
       setTimeout(() => setCopiedTarget(null), 2000);
     } catch (error) {
       console.error("Failed to copy code:", error);
@@ -1075,10 +1064,30 @@ export default function Home() {
     }
   };
 
-  const activeCodeBlock = codeBlocks[activeCodeBlockIndex] ?? null;
   const previewDocument = buildPreviewDocument(codeBlocks);
   const hasPreview = Boolean(previewDocument);
-  const canShowCode = Boolean(activeCodeBlock);
+  const canShowCode = previewableCodeBlocks.length > 0;
+
+  useEffect(() => {
+    if (!isPreviewFullscreen) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsPreviewFullscreen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isPreviewFullscreen]);
+
+  useEffect(() => {
+    if (!showTerminal || !hasPreview) {
+      setIsPreviewFullscreen(false);
+    }
+  }, [showTerminal, hasPreview]);
 
   // ── Loading state while checking localStorage ──
   if (!startScreenChecked) {
@@ -1439,23 +1448,17 @@ export default function Home() {
               animate={{ opacity: 1, x: 0 }} 
               exit={{ opacity: 0, x: 60 }}
               transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="w-[420px] border-l border-border/50 bg-card/80 backdrop-blur-xl flex flex-col flex-shrink-0"
+              className="w-full max-w-[560px] border-l border-border/50 bg-card/80 backdrop-blur-xl flex flex-col flex-shrink-0 lg:w-[560px]"
             >
               <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-sm font-medium text-foreground">Workspace Preview</span>
-                  {activeCodeBlock?.language && (
-                    <span className="px-2 py-0.5 rounded-md bg-primary/15 text-primary text-xs font-mono">{activeCodeBlock.language}</span>
-                  )}
-                  {codeBlocks.length > 1 && (
-                    <span className="px-2 py-0.5 rounded-md bg-muted text-muted-foreground text-[11px] font-medium">{activeCodeBlockIndex + 1}/{codeBlocks.length}</span>
-                  )}
                 </div>
                 <Button variant="ghost" size="icon" onClick={() => setShowTerminal(false)} className="h-7 w-7 text-muted-foreground hover:text-foreground">
                   <X className="w-4 h-4" />
                 </Button>
               </div>
-              <div className="flex-1 overflow-y-auto p-5">
+              <div className="flex flex-1 min-h-0 flex-col p-5">
                 {(hasPreview || canShowCode || terminalCommands.length > 0) && (
                   <div className="mb-4 flex flex-wrap gap-2">
                     {hasPreview && (
@@ -1491,75 +1494,53 @@ export default function Home() {
                   </div>
                 )}
 
-                {codeBlocks.length > 1 && (
-                  <div className="mb-4 flex flex-wrap gap-2">
-                    {codeBlocks.map((block, index) => (
-                      <Button
-                        key={`${block.language}-${index}`}
-                        variant={index === activeCodeBlockIndex ? "default" : "surface"}
-                        size="sm"
-                        className="h-7 max-w-[120px] px-3 text-xs"
-                        onClick={() => {
-                          setActiveCodeBlockIndex(index);
-                          setExtractedCode(block.code);
-                          setCodeLanguage(block.language);
-                        }}
-                      >
-                        <span className="truncate">{block.language || `block ${index + 1}`}</span>
-                      </Button>
-                    ))}
-                  </div>
-                )}
-
                 {terminalView === "preview" && hasPreview && (
-                  <div className="mb-4">
+                  <div className="flex min-h-0 flex-1 flex-col">
                     <div className="mb-2 flex items-center justify-between">
                       <div>
                         <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Live Preview</div>
                         <p className="mt-1 text-xs text-muted-foreground">Rendered sandbox for previewable web code blocks.</p>
                       </div>
+                      <Button onClick={() => setIsPreviewFullscreen(true)} variant="surface" size="sm" className="gap-1.5">
+                        <Maximize2 className="w-3.5 h-3.5" /> Full Screen
+                      </Button>
                     </div>
-                    <div className="overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+                    <div className="flex flex-1 min-h-0 overflow-hidden rounded-xl border border-border bg-background shadow-sm">
                       <iframe
                         title="Generated code preview"
                         sandbox="allow-scripts"
                         srcDoc={previewDocument ?? undefined}
-                        className="h-[360px] w-full bg-white"
+                        className="h-full min-h-[520px] w-full bg-white"
                       />
                     </div>
                   </div>
                 )}
 
                 {terminalView === "code" && activeCodeBlock && (
-                  <div className="mb-4">
+                  <div className="flex min-h-0 flex-1 flex-col">
                     <div className="mb-3 flex items-center justify-between gap-3">
                       <div>
                         <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Code Preview</div>
-                        <p className="mt-1 text-xs text-muted-foreground">Readable, line-numbered preview similar to an artifact/code pane.</p>
+                        <p className="mt-1 text-xs text-muted-foreground">Readable, line-numbered view of every extracted code block.</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {codeBlocks.length > 1 && (
-                          <Button onClick={handleCopyAllCode} variant="surface" size="sm" className="gap-1.5">
-                            {copiedTarget === "all-code" ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copied All</> : <><Copy className="w-3.5 h-3.5" /> Copy All</>}
-                          </Button>
-                        )}
                         <Button onClick={handleCopy} variant="surface" size="sm" className="gap-1.5">
                           {copiedTarget === "code" ? <><Check className="w-3.5 h-3.5 text-green-500" /> Copied!</> : <><Copy className="w-3.5 h-3.5" /> Copy Code</>}
                         </Button>
                       </div>
                     </div>
-                    <div className="overflow-hidden rounded-xl border border-border bg-background">
+                    <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-background">
                       <div className="flex items-center justify-between border-b border-border/70 px-4 py-2 text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-                        <span>{activeCodeBlock.language || "code"}</span>
-                        <span>{activeCodeBlock.code.split("\n").length} lines</span>
+                        <span>{previewableCodeBlocks.length > 1 ? `${previewableCodeBlocks.length} code blocks` : activeCodeBlock.language || "code"}</span>
+                        <span>{previewableCodeBlocks.reduce((total, block) => total + block.code.split("\n").length, 0)} lines</span>
                       </div>
-                      <pre className="max-h-[420px] overflow-auto py-3 font-mono text-xs leading-relaxed">{renderLineNumberedCode(activeCodeBlock.code, activeCodeBlock.language)}</pre>
+                      <div className="flex-1 overflow-auto">{renderCodeBlocks(previewableCodeBlocks)}</div>
                     </div>
                   </div>
                 )}
                 
                 {terminalView === "commands" && terminalCommands.length > 0 && (
-                  <div>
+                  <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                     <div className="mb-3 flex items-start justify-between gap-3">
                       <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Terminal Commands</div>
                       <Button onClick={handleCopyCommands} variant="surface" size="sm" className="gap-1.5">
@@ -1567,7 +1548,7 @@ export default function Home() {
                       </Button>
                     </div>
                     <p className="mb-3 text-xs text-muted-foreground">Review commands before running them in your real terminal.</p>
-                    <div>
+                    <div className="flex-1 overflow-auto">
                       {terminalCommands.map((cmd, i) => (
                         <div key={i} className="mb-2 font-mono text-xs text-foreground bg-background/50 p-3 rounded-lg border-l-2 border-primary">
                           <span className="text-primary/70">$ </span>{cmd}
@@ -1592,6 +1573,37 @@ export default function Home() {
 
       {/* Hidden audio element */}
       <audio ref={audioRef} autoPlay controls style={{ display: "none" }} />
+
+      <AnimatePresence>
+        {isPreviewFullscreen && hasPreview && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md"
+          >
+            <div className="flex h-full flex-col p-4 sm:p-6">
+              <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl border border-border/60 bg-card/80 px-4 py-3 shadow-xl">
+                <div>
+                  <div className="text-sm font-medium text-foreground">Full Screen Preview</div>
+                  <p className="mt-1 text-xs text-muted-foreground">Click inside the preview to focus keyboard and mouse controls. Press Escape to close.</p>
+                </div>
+                <Button onClick={() => setIsPreviewFullscreen(false)} variant="surface" size="sm" className="gap-1.5">
+                  <Minimize2 className="w-3.5 h-3.5" /> Exit Full Screen
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+                <iframe
+                  title="Generated code preview full screen"
+                  sandbox="allow-scripts"
+                  srcDoc={previewDocument ?? undefined}
+                  className="h-full w-full bg-white"
+                />
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Toast Notification */}
       <AnimatePresence>
