@@ -186,7 +186,8 @@ export default function ChessGame() {
 
   const calculateValidMoves = (pieces: Map<string, Piece>, piece: Piece): Position[] => {
     const moves: Position[] = [];
-    const { x, y, type } = piece;
+    const { x, y } = piece.position;
+    const { type } = piece;
 
     // Helper to check if square is occupied
     const isOccupied = (px: number, py: number, byColor?: string): Piece | null => {

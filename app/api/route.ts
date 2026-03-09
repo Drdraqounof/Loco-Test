@@ -6,6 +6,20 @@ import {
   extractLineNumbersFromResponse,
   validateLineNumbers 
 } from "@/tools/hooks/utils/codeProcessor";
+import {
+  clearPendingDraft,
+  formatDraftConfirmation,
+  getLatestPendingDraft,
+  isCalendarConfirmationReply,
+  looksLikeCalendarIntent,
+  parseCalendarIntent,
+  previousAssistantAskedToConfirm,
+  savePendingDraft,
+} from "@/lib/calendarIntent";
+import {
+  createCalendarEvent,
+  getStoredCalendarConnection,
+} from "@/lib/googleCalendar";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -64,6 +78,30 @@ interface Message {
   content: string;
 }
 
+function formatEventSuccessMessage(event: {
+  title: string;
+  startIso: Date;
+  endIso: Date;
+  timeZone: string;
+  htmlLink?: string | null;
+}) {
+  const startFormatter = new Intl.DateTimeFormat("en-US", {
+    dateStyle: "full",
+    timeStyle: "short",
+    timeZone: event.timeZone,
+  });
+  const endFormatter = new Intl.DateTimeFormat("en-US", {
+    timeStyle: "short",
+    timeZone: event.timeZone,
+  });
+
+  return `Your event is on the calendar.\n\n- Title: ${event.title}\n- Starts: ${startFormatter.format(event.startIso)}\n- Ends: ${endFormatter.format(event.endIso)}\n- Time zone: ${event.timeZone}${event.htmlLink ? `\n- Link: ${event.htmlLink}` : ""}`;
+}
+
+function isCancellationReply(text: string) {
+  return /^(no|cancel|never mind|dont|don't add it|stop)\b/i.test(text.trim());
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (!OPENAI_API_KEY) {
@@ -73,13 +111,169 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { messages, code, language, user, topic = "general", voice = "alloy" } = await request.json();
+    const {
+      messages,
+      code,
+      language,
+      user,
+      topic = "general",
+      voice = "alloy",
+      timeZone = "UTC",
+    } = await request.json();
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json(
         { error: "Messages are required" },
         { status: 400 }
       );
+    }
+
+    const latestUserMessage = messages[messages.length - 1]?.content?.trim();
+    const latestRole = messages[messages.length - 1]?.role;
+
+    if (!latestUserMessage || latestRole !== "user") {
+      return NextResponse.json(
+        { error: "Latest message must be a user message" },
+        { status: 400 }
+      );
+    }
+
+    if (
+      previousAssistantAskedToConfirm(messages) &&
+      isCalendarConfirmationReply(latestUserMessage)
+    ) {
+      const pendingDraft = await getLatestPendingDraft();
+
+      if (!pendingDraft) {
+        return NextResponse.json({
+          success: true,
+          message: "I don't have a pending calendar draft right now. Ask me to schedule the event again and I'll prepare it.",
+          audio: null,
+        });
+      }
+
+      try {
+        const createdEvent = await createCalendarEvent({
+          title: pendingDraft.title,
+          description: pendingDraft.description,
+          location: pendingDraft.location,
+          startIso: pendingDraft.startIso.toISOString(),
+          endIso: pendingDraft.endIso.toISOString(),
+          timeZone: pendingDraft.timeZone,
+          origin: request.nextUrl.origin,
+        });
+
+        await clearPendingDraft(pendingDraft.id);
+
+        return NextResponse.json({
+          success: true,
+          message: formatEventSuccessMessage({
+            title: pendingDraft.title,
+            startIso: pendingDraft.startIso,
+            endIso: pendingDraft.endIso,
+            timeZone: pendingDraft.timeZone,
+            htmlLink: createdEvent.htmlLink,
+          }),
+          audio: null,
+        });
+      } catch (error) {
+        console.error("Google Calendar create event error:", error);
+        return NextResponse.json({
+          success: true,
+          message: "I couldn't create the Google Calendar event. Reconnect Google Calendar in Settings and try again.",
+          audio: null,
+        });
+      }
+    }
+
+    if (
+      previousAssistantAskedToConfirm(messages) &&
+      isCancellationReply(latestUserMessage)
+    ) {
+      const pendingDraft = await getLatestPendingDraft();
+      if (pendingDraft) {
+        await clearPendingDraft(pendingDraft.id);
+      }
+
+      return NextResponse.json({
+        success: true,
+        message: "Understood. I canceled the pending Google Calendar draft.",
+        audio: null,
+      });
+    }
+
+    if (looksLikeCalendarIntent(latestUserMessage)) {
+      const connection = await getStoredCalendarConnection();
+
+      if (!connection) {
+        return NextResponse.json({
+          success: true,
+          message:
+            "I can add that to Google Calendar, but Google Calendar is not connected yet. Open Settings, connect your Google account, then ask me again.",
+          audio: null,
+        });
+      }
+
+      try {
+        const parsedIntent = await parseCalendarIntent({
+          apiKey: OPENAI_API_KEY,
+          message: latestUserMessage,
+          timeZone,
+          nowIso: new Date().toISOString(),
+        });
+
+        if (parsedIntent.intent !== "create_event") {
+          return NextResponse.json({
+            success: true,
+            message: "I didn't read that as a calendar request. If you want an event created, tell me the title plus the date and time.",
+            audio: null,
+          });
+        }
+
+        if (parsedIntent.needsClarification || !parsedIntent.event) {
+          return NextResponse.json({
+            success: true,
+            message:
+              parsedIntent.clarificationQuestion ||
+              "I need a bit more detail before I can add that to Google Calendar. Tell me the date and time you want.",
+            audio: null,
+          });
+        }
+
+        const startDate = new Date(parsedIntent.event.startIso);
+        const endDate = new Date(parsedIntent.event.endIso);
+
+        if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
+          return NextResponse.json({
+            success: true,
+            message: "I couldn't confidently parse the event time. Please restate it with a clearer date and time.",
+            audio: null,
+          });
+        }
+
+        const draft = await savePendingDraft({
+          title: parsedIntent.event.title,
+          description: parsedIntent.event.description,
+          location: parsedIntent.event.location,
+          startIso: parsedIntent.event.startIso,
+          endIso: parsedIntent.event.endIso,
+          timeZone: parsedIntent.event.timeZone || timeZone,
+          rawRequest: latestUserMessage,
+        });
+
+        return NextResponse.json({
+          success: true,
+          message: formatDraftConfirmation(draft),
+          audio: null,
+        });
+      } catch (error) {
+        console.error("Calendar intent handling error:", error);
+        return NextResponse.json({
+          success: true,
+          message: "I understood this as a calendar request, but I couldn't safely parse the event details. Try restating it with the title, date, time, and duration.",
+          audio: null,
+        });
+      }
     }
 
     // Prepare for audio response

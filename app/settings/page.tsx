@@ -4,14 +4,42 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 
+interface CalendarStatus {
+  configured: boolean;
+  connected: boolean;
+  email: string | null;
+  redirectUri?: string | null;
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [voice, setVoice] = useState<VoiceKey>("echo");
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
   const [enablePingPong, setEnablePingPong] = useState(true);
   const [enableChess, setEnableChess] = useState(true);
-  const [settingsTab, setSettingsTab] = useState<"voice" | "experimental">("voice");
+  const [settingsTab, setSettingsTab] = useState<"voice" | "integrations" | "experimental">("voice");
   const [theme] = useState(VOICE_THEMES["echo"]);
+  const [calendarStatus, setCalendarStatus] = useState<CalendarStatus>({
+    configured: false,
+    connected: false,
+    email: null,
+  });
+  const [calendarLoading, setCalendarLoading] = useState(true);
+  const [calendarMessage, setCalendarMessage] = useState<string | null>(null);
+
+  const loadCalendarStatus = async () => {
+    setCalendarLoading(true);
+    try {
+      const response = await fetch("/api/google-calendar", { cache: "no-store" });
+      const data = await response.json();
+      setCalendarStatus(data);
+    } catch (error) {
+      console.error("Failed to load Google Calendar status:", error);
+      setCalendarMessage("Could not load Google Calendar status.");
+    } finally {
+      setCalendarLoading(false);
+    }
+  };
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -24,6 +52,22 @@ export default function SettingsPage() {
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
+    loadCalendarStatus();
+  }, []);
+
+  useEffect(() => {
+    const googleCalendarParam = new URLSearchParams(window.location.search).get("googleCalendar");
+    if (!googleCalendarParam) return;
+
+    const messageMap: Record<string, string> = {
+      connected: "Google Calendar connected successfully.",
+      error: "Google Calendar connection failed.",
+      "invalid-state": "Google Calendar sign-in could not be verified. Try again.",
+    };
+
+    setCalendarMessage(messageMap[googleCalendarParam] || null);
+    setSettingsTab("integrations");
+    loadCalendarStatus();
   }, []);
 
   // Save settings to localStorage
@@ -45,6 +89,27 @@ export default function SettingsPage() {
   const handleChessChange = (checked: boolean) => {
     setEnableChess(checked);
     localStorage.setItem("enableChess", checked.toString());
+  };
+
+  const handleConnectCalendar = () => {
+    window.location.href = "/api/google-calendar/connect";
+  };
+
+  const handleDisconnectCalendar = async () => {
+    setCalendarLoading(true);
+    setCalendarMessage(null);
+    try {
+      const response = await fetch("/api/google-calendar", { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error("Disconnect failed");
+      }
+      setCalendarMessage("Google Calendar disconnected.");
+      await loadCalendarStatus();
+    } catch (error) {
+      console.error("Failed to disconnect Google Calendar:", error);
+      setCalendarMessage("Could not disconnect Google Calendar.");
+      setCalendarLoading(false);
+    }
   };
 
   return (
@@ -145,6 +210,24 @@ export default function SettingsPage() {
           >
             🧪 Experimental
           </button>
+          <button
+            onClick={() => setSettingsTab("integrations")}
+            style={{
+              background: settingsTab === "integrations" ? `${theme.accentColor}30` : "transparent",
+              border: `1px solid ${settingsTab === "integrations" ? theme.accentColor : theme.borderColor}30`,
+              color: theme.textColor,
+              padding: "10px 20px",
+              borderRadius: "6px",
+              cursor: "pointer",
+              fontSize: "13px",
+              fontWeight: 600,
+              transition: "all 0.2s ease",
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+            }}
+          >
+            📅 Integrations
+          </button>
         </div>
 
         {/* Voice Tab */}
@@ -226,6 +309,125 @@ export default function SettingsPage() {
                 opacity: 0.8,
               }}>
                 💡 <strong>Pro Tip:</strong> Try different voices to find the one you prefer most
+              </p>
+            </div>
+          </div>
+        )}
+
+        {settingsTab === "integrations" && (
+          <div style={{ padding: "40px 24px", maxWidth: "700px" }}>
+            <h2 style={{
+              fontSize: "18px",
+              fontWeight: 600,
+              marginBottom: "8px",
+              marginTop: 0,
+            }}>
+              Google Calendar
+            </h2>
+            <p style={{
+              fontSize: "14px",
+              color: theme.textColor,
+              opacity: 0.7,
+              marginBottom: "24px",
+              lineHeight: "1.6",
+            }}>
+              Connect Google Calendar so Loco can prepare and add events after you confirm them in chat.
+            </p>
+
+            {calendarMessage && (
+              <div style={{
+                marginBottom: "16px",
+                padding: "14px 16px",
+                background: `${theme.accentColor}15`,
+                border: `1px solid ${theme.accentColor}35`,
+                borderRadius: "8px",
+                fontSize: "13px",
+              }}>
+                {calendarMessage}
+              </div>
+            )}
+
+            <div style={{
+              padding: "20px",
+              background: `${theme.borderColor}10`,
+              borderRadius: "12px",
+              border: `1px solid ${theme.borderColor}20`,
+              marginBottom: "20px",
+            }}>
+              <div style={{ fontSize: "14px", fontWeight: 700, marginBottom: "10px" }}>
+                Status
+              </div>
+
+              {calendarLoading ? (
+                <div style={{ fontSize: "13px", opacity: 0.7 }}>Checking Google Calendar connection...</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: "13px", marginBottom: "8px", opacity: 0.85 }}>
+                    Configuration: {calendarStatus.configured ? "Ready" : "Missing Google OAuth environment variables"}
+                  </div>
+                  <div style={{ fontSize: "13px", marginBottom: "8px", opacity: 0.85 }}>
+                    Connection: {calendarStatus.connected ? "Connected" : "Not connected"}
+                  </div>
+                  {calendarStatus.email && (
+                    <div style={{ fontSize: "13px", marginBottom: "8px", opacity: 0.85 }}>
+                      Google account: {calendarStatus.email}
+                    </div>
+                  )}
+                  {calendarStatus.redirectUri && (
+                    <div style={{ fontSize: "12px", opacity: 0.6 }}>
+                      Redirect URI: {calendarStatus.redirectUri}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "24px" }}>
+              <button
+                onClick={handleConnectCalendar}
+                disabled={!calendarStatus.configured || calendarLoading}
+                style={{
+                  background: calendarStatus.configured ? `linear-gradient(135deg, ${theme.accentColor}40 0%, ${theme.accentColor}20 100%)` : `${theme.borderColor}15`,
+                  border: `1px solid ${calendarStatus.configured ? theme.accentColor : theme.borderColor}40`,
+                  color: theme.textColor,
+                  padding: "12px 18px",
+                  borderRadius: "8px",
+                  cursor: !calendarStatus.configured || calendarLoading ? "not-allowed" : "pointer",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  opacity: !calendarStatus.configured || calendarLoading ? 0.5 : 1,
+                }}
+              >
+                Connect Google Calendar
+              </button>
+
+              <button
+                onClick={handleDisconnectCalendar}
+                disabled={!calendarStatus.connected || calendarLoading}
+                style={{
+                  background: `${theme.borderColor}15`,
+                  border: `1px solid ${theme.borderColor}30`,
+                  color: theme.textColor,
+                  padding: "12px 18px",
+                  borderRadius: "8px",
+                  cursor: !calendarStatus.connected || calendarLoading ? "not-allowed" : "pointer",
+                  fontSize: "13px",
+                  fontWeight: 700,
+                  opacity: !calendarStatus.connected || calendarLoading ? 0.5 : 1,
+                }}
+              >
+                Disconnect
+              </button>
+            </div>
+
+            <div style={{
+              padding: "16px",
+              background: `${theme.accentColor}15`,
+              borderRadius: "8px",
+              borderLeft: `4px solid ${theme.accentColor}`,
+            }}>
+              <p style={{ fontSize: "13px", color: theme.textColor, margin: 0, opacity: 0.85, lineHeight: "1.6" }}>
+                Example: after connecting, you can say "Schedule lunch with Sam tomorrow at 1 PM for 45 minutes". Loco will draft the event details, ask for confirmation, and only add it to Google Calendar after you reply "yes".
               </p>
             </div>
           </div>

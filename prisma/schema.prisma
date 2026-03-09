@@ -20,3 +20,35 @@ model User {
 
   @@index([email])
 }
+
+model GoogleCalendarConnection {
+  id                  Int      @id @default(autoincrement())
+  provider            String   @default("google")
+  email               String?
+  accessToken         String   @db.Text
+  refreshToken        String?  @db.Text
+  expiryDate          BigInt?
+  scope               String?  @db.Text
+  calendarId          String   @default("primary")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([provider])
+}
+
+model PendingCalendarDraft {
+  id                String   @id @default(cuid())
+  source            String   @default("loco")
+  title             String
+  description       String?  @db.Text
+  location          String?
+  startIso          DateTime
+  endIso            DateTime
+  timeZone          String
+  needsConfirmation Boolean  @default(true)
+  rawRequest        String   @db.Text
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([createdAt])
+}

@@ -172,7 +172,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (geminiResult && !geminiResult.success) {
-      lastStatus = geminiResult.status;
+      lastStatus = geminiResult.status ?? 500;
       lastErrorMessage = geminiResult.error;
     }
 

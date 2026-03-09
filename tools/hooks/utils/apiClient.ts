@@ -92,6 +92,7 @@ export async function callAIAPI(
       voice,
       language: "javascript",
       topic: "general",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }),
     timeout: 30000,
     retries: 2,
