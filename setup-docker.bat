@@ -1,6 +1,6 @@
 @echo off
 REM Loco Docker Setup Script for Windows
-REM Initializes the complete stack with database migrations
+REM Initializes the complete stack and lets the app container run migrations on startup
 
 setlocal enabledelayedexpansion
 
@@ -90,19 +90,16 @@ echo 📊 Service Status:
 docker compose ps
 echo.
 
-REM Step 6: Run Prisma migrations
-echo 🗄️  Running database migrations...
-docker compose exec -T app npm run prisma:migrate:deploy
-
 echo.
 echo ✅ Setup complete!
 echo.
 echo 🌐 Visit: http://localhost:3000
+echo 🗄️  Prisma migrations were applied automatically during app startup.
 echo.
 echo 📚 Useful commands:
 echo    docker compose logs -f          : View logs
 echo    docker compose down              : Stop services
 echo    docker compose ps                : Check status
-echo    docker compose exec app bash     : Shell access to app
+echo    docker compose exec app sh       : Shell access to app
 echo.
 pause

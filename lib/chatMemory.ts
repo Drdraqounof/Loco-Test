@@ -1,4 +1,16 @@
 import { prisma } from "@/lib/prisma";
+import { scoreMemoryRelevance, trimSnippet } from "@/lib/memoryRetrieval";
+
+export interface RelevantConversationMatch {
+  date: string;
+  userText: string;
+  assistantText: string;
+}
+
+export interface RelevantConversationResult {
+  context: string;
+  matches: RelevantConversationMatch[];
+}
 
 export interface PersistedChatMessageInput {
   role: "user" | "assistant";
@@ -71,8 +83,52 @@ export async function saveConversationSession(input: PersistedChatSessionInput) 
 }
 
 export async function deleteConversationSession(id: string) {
-  await prisma.conversationSession.delete({
-    where: { id },
+  return prisma.$transaction(async (transaction) => {
+    await transaction.calendarEventMemory.updateMany({
+      where: {
+        source: "loco",
+        sessionId: id,
+      },
+      data: {
+        sessionId: null,
+      },
+    });
+
+    await transaction.conversationMessage.deleteMany({
+      where: { sessionId: id },
+    });
+
+    const result = await transaction.conversationSession.deleteMany({
+      where: {
+        id,
+        source: "loco",
+      },
+    });
+
+    return result.count > 0;
+  });
+}
+
+export async function deleteAllConversationSessions() {
+  await prisma.$transaction(async (transaction) => {
+    await transaction.calendarEventMemory.updateMany({
+      where: { source: "loco" },
+      data: {
+        sessionId: null,
+      },
+    });
+
+    await transaction.conversationMessage.deleteMany({
+      where: {
+        session: {
+          source: "loco",
+        },
+      },
+    });
+
+    await transaction.conversationSession.deleteMany({
+      where: { source: "loco" },
+    });
   });
 }
 
@@ -159,15 +215,6 @@ export async function deleteRememberedCalendarEventsByGoogleIds(googleEventIds: 
   });
 }
 
-function trimSnippet(text: string, maxLength = 180) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 1)}…`;
-}
-
 export async function buildPersistentMemoryContext() {
   const [recentSessions, recentEvents] = await Promise.all([
     prisma.conversationSession.findMany({
@@ -223,4 +270,70 @@ export async function buildPersistentMemoryContext() {
   }
 
   return `\nPERSISTENT MEMORY:\n${sections.join("\n")}`;
+}
+
+export async function buildRelevantConversationContext(query: string, limit = 3) {
+  const sessions = await prisma.conversationSession.findMany({
+    where: { source: "loco" },
+    include: {
+      messages: {
+        orderBy: { position: "asc" },
+      },
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 30,
+  });
+
+  const candidates = sessions.flatMap((session) => {
+    return session.messages
+      .map((message, index) => {
+        if (message.role !== "user") {
+          return null;
+        }
+
+        const followingAssistant = session.messages.slice(index + 1).find((entry) => entry.role === "assistant");
+        const combinedText = `${message.content}\n${followingAssistant?.content || ""}`;
+        return {
+          updatedAt: session.updatedAt,
+          userText: message.content,
+          assistantText: followingAssistant?.content || "",
+          score: scoreMemoryRelevance(query, combinedText),
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
+  });
+
+  const relevant = candidates
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return right.updatedAt.getTime() - left.updatedAt.getTime();
+    })
+    .slice(0, limit);
+
+  if (relevant.length === 0) {
+    return {
+      context: "",
+      matches: [],
+    } satisfies RelevantConversationResult;
+  }
+
+  return {
+    context: `\nRelevant prior conversation context:\n${relevant
+      .map((entry) => {
+        const dateLabel = entry.updatedAt.toISOString().slice(0, 10);
+        const userLine = trimSnippet(entry.userText, 150);
+        const assistantLine = entry.assistantText ? trimSnippet(entry.assistantText, 120) : "";
+        return `- ${dateLabel}: User mentioned \"${userLine}\"${assistantLine ? ` | You replied about: ${assistantLine}` : ""}`;
+      })
+      .join("\n")}`,
+    matches: relevant.map((entry) => ({
+      date: entry.updatedAt.toISOString().slice(0, 10),
+      userText: trimSnippet(entry.userText, 150),
+      assistantText: entry.assistantText ? trimSnippet(entry.assistantText, 120) : "",
+    })),
+  } satisfies RelevantConversationResult;
 }

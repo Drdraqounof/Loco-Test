@@ -1,3 +1,5 @@
+import type { AttachmentContextItem } from "@/lib/attachmentContext";
+
 interface FetchOptions extends RequestInit {
   timeout?: number;
   retries?: number;
@@ -83,8 +85,18 @@ export async function fetchWithRetry<T>(
 export async function callAIAPI(
   messages: Array<{ role: string; content: string }>,
   voice: string,
-  sessionId?: string | null
-): Promise<FetchResponse<{ message: string; audio?: string }>> {
+  sessionId?: string | null,
+  attachments: AttachmentContextItem[] = []
+): Promise<FetchResponse<{
+  message: string;
+  audio?: string;
+  memoryHit?: boolean;
+  memorySources?: string[];
+  memoryMatches?: {
+    assistantMemories?: Array<{ content: string; kind: string }>;
+    conversationMatches?: Array<{ date: string; userText: string; assistantText: string }>;
+  };
+}>> {
   return fetchWithRetry("/api", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -92,6 +104,7 @@ export async function callAIAPI(
       messages,
       voice,
       sessionId,
+      attachments,
       language: "javascript",
       topic: "general",
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,

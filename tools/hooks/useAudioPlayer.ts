@@ -27,8 +27,8 @@ export function useAudioPlayer() {
     };
   }, []);
 
-  const playAudio = (base64Audio: string) => {
-    const audioUrl = `data:audio/mp3;base64,${base64Audio}`;
+  const playAudio = (base64Audio: string, mimeType = 'audio/mp3') => {
+    const audioUrl = `data:${mimeType};base64,${base64Audio}`;
     setAudioData(audioUrl);
     if (audioRef.current) {
       audioRef.current.src = audioUrl;

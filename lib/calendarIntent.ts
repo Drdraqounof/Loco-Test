@@ -102,9 +102,81 @@ function addMinutesToIsoString(isoString: string, minutesToAdd: number) {
   return buildIsoLocalString(year, month, day, hours, minutes);
 }
 
+function getTimeZoneDateParts(date: Date, timeZone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+
+  return {
+    year: Number(parts.find((part) => part.type === "year")?.value || "0"),
+    month: Number(parts.find((part) => part.type === "month")?.value || "0"),
+    day: Number(parts.find((part) => part.type === "day")?.value || "0"),
+    hours: Number(parts.find((part) => part.type === "hour")?.value || "0"),
+    minutes: Number(parts.find((part) => part.type === "minute")?.value || "0"),
+  };
+}
+
+function addDaysToParts(parts: { year: number; month: number; day: number }, days: number) {
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days, 12, 0, 0));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+function inferHourWithContext(rawHours: number, meridiem: string | undefined, normalized: string, nowHours: number) {
+  let hours = rawHours;
+
+  if (meridiem === "pm" && hours < 12) {
+    return hours + 12;
+  }
+
+  if (meridiem === "am" && hours === 12) {
+    return 0;
+  }
+
+  if (meridiem) {
+    return hours;
+  }
+
+  const suggestsEvening = /\b(later today|tonight|this evening|evening|after work)\b/i.test(normalized);
+  const suggestsAfternoon = /\b(this afternoon|afternoon)\b/i.test(normalized);
+  const suggestsMorning = /\b(this morning|morning)\b/i.test(normalized);
+
+  if (suggestsEvening && hours < 12) {
+    return hours + 12;
+  }
+
+  if (suggestsAfternoon && hours < 12) {
+    return hours === 12 ? hours : hours + 12;
+  }
+
+  if (suggestsMorning && hours === 12) {
+    return 0;
+  }
+
+  if (/\b(later today|today)\b/i.test(normalized) && hours < 12 && hours <= nowHours) {
+    return hours + 12;
+  }
+
+  return hours;
+}
+
 function extractHeuristicTitle(message: string) {
   const normalized = normalizeWhitespace(message);
   const patterns = [
+    /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:on\s+my\s+calend(?:a|e)r\s+)?to\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
+    /(?:remind(?: me)?(?: to)?|reminder)\s+(?:on\s+my\s+calend(?:a|e)r\s+)?to\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
+    /(?:remind(?: me)?(?: to)?|reminder)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
     /(?:reminder|event|appointment|meeting)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
     /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:for|about)?\s*(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
     /(?:for)\s+(.+?)(?=\s+(?:on|at|around)\b|$)/i,
@@ -113,9 +185,13 @@ function extractHeuristicTitle(message: string) {
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
     if (match?.[1]) {
-      const title = match[1].replace(/^(?:a|an|the)\s+/i, "").trim();
+      const title = match[1]
+        .replace(/^(?:a|an|the|my)\s+/i, "")
+        .replace(/^on\s+my\s+calend(?:a|e)r\s+to\s+/i, "")
+        .replace(/\s+(?:please|pls)$/i, "")
+        .trim();
       if (title) {
-        return title;
+        return title.charAt(0).toUpperCase() + title.slice(1);
       }
     }
   }
@@ -123,12 +199,31 @@ function extractHeuristicTitle(message: string) {
   return "Reminder";
 }
 
-function parseExplicitDateTimeIntent(message: string, timeZone: string): ParsedCalendarIntent | null {
+function parseExplicitDateTimeIntent(message: string, timeZone: string, nowIso: string): ParsedCalendarIntent | null {
   const normalized = normalizeWhitespace(message);
   const dateMatch = normalized.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
   const timeMatch = normalized.match(/\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const nowParts = getTimeZoneDateParts(new Date(nowIso), timeZone);
 
-  if (!dateMatch) {
+  let resolvedDate: { year: number; month: number; day: number } | null = null;
+
+  if (dateMatch) {
+    const month = Number(dateMatch[1]);
+    const day = Number(dateMatch[2]);
+    const rawYear = Number(dateMatch[3]);
+    const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+    resolvedDate = { year, month, day };
+  } else if (/\btomorrow\b/i.test(normalized)) {
+    resolvedDate = addDaysToParts(nowParts, 1);
+  } else if (/\b(today|later today|tonight|this morning|this afternoon|this evening)\b/i.test(normalized)) {
+    resolvedDate = {
+      year: nowParts.year,
+      month: nowParts.month,
+      day: nowParts.day,
+    };
+  }
+
+  if (!resolvedDate) {
     return null;
   }
 
@@ -141,21 +236,14 @@ function parseExplicitDateTimeIntent(message: string, timeZone: string): ParsedC
     };
   }
 
-  const month = Number(dateMatch[1]);
-  const day = Number(dateMatch[2]);
-  const rawYear = Number(dateMatch[3]);
-  const year = rawYear < 100 ? 2000 + rawYear : rawYear;
+  const month = resolvedDate.month;
+  const day = resolvedDate.day;
+  const year = resolvedDate.year;
 
   let hours = Number(timeMatch[1]);
   const minutes = Number(timeMatch[2] || "0");
   const meridiem = timeMatch[3]?.toLowerCase();
-
-  if (meridiem === "pm" && hours < 12) {
-    hours += 12;
-  }
-  if (meridiem === "am" && hours === 12) {
-    hours = 0;
-  }
+  hours = inferHourWithContext(hours, meridiem, normalized, nowParts.hours);
 
   if (
     Number.isNaN(month) ||
@@ -264,7 +352,7 @@ export async function parseCalendarIntent(params: {
   timeZone: string;
   nowIso: string;
 }) {
-  const heuristicResult = parseExplicitDateTimeIntent(params.message, params.timeZone);
+  const heuristicResult = parseExplicitDateTimeIntent(params.message, params.timeZone, params.nowIso);
 
   try {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {

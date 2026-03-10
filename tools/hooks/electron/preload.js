@@ -19,6 +19,16 @@ try {
     file: {
       read: (filePath) => ipcRenderer.invoke('file:read', filePath),
     },
+
+    attachments: {
+      openFiles: () => ipcRenderer.invoke('attachments:pick-files'),
+      openFolder: () => ipcRenderer.invoke('attachments:pick-folder'),
+    },
+
+    tts: {
+      synthesize: (text, voice) => ipcRenderer.invoke('tts:synthesize', text, voice),
+      status: (voice) => ipcRenderer.invoke('tts:status', voice),
+    },
     
     // Platform info
     platform: process.platform,

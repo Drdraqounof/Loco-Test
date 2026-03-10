@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   # PostgreSQL Database Service
   db:
@@ -48,8 +46,6 @@ services:
     restart: always
     networks:
       - loco_network
-    # Uncomment to run migrations automatically on startup
-    # command: sh -c "npm run prisma:deploy && npm start"
 
 volumes:
   postgres_data:

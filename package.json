@@ -16,10 +16,14 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "docker:build": "docker compose build",
     "docker:up": "docker compose up -d",
+    "docker:up:build": "docker compose up -d --build",
     "docker:down": "docker compose down",
     "docker:reset": "docker compose down -v",
-    "docker:logs": "docker compose logs -f"
+    "docker:logs": "docker compose logs -f",
+    "docker:ps": "docker compose ps",
+    "docker:shell": "docker compose exec app sh"
   },
   "dependencies": {
     "@prisma/client": "^5.7.0",

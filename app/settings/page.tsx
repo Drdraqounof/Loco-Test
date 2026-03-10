@@ -15,12 +15,28 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
+import { useElectron } from "@/tools/hooks/useElectron";
+
+type TtsProvider = "browser" | "server" | "piper";
+
+interface BrowserVoiceStatus {
+  selectedVoiceName: string | null;
+  exactMatchAvailable: boolean;
+  totalVoices: number;
+}
 
 interface CalendarStatus {
   configured: boolean;
   connected: boolean;
   email: string | null;
   redirectUri?: string | null;
+}
+
+interface PiperStatus {
+  available: boolean;
+  reason?: string | null;
+  executable?: string;
+  model?: string;
 }
 
 interface TabButtonProps {
@@ -94,9 +110,22 @@ function ToggleCard({ title, description, checked, onChange }: ToggleCardProps) 
   );
 }
 
+function selectPreferredBrowserVoice(voices: SpeechSynthesisVoice[]) {
+  return (
+    voices.find((voice) => /google uk english male/i.test(voice.name) || /google uk english male/i.test(voice.voiceURI)) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en-gb") && /daniel|george|arthur|alfie/i.test(voice.name)) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en-gb") && /david|natural|google/i.test(voice.name)) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en-gb")) ||
+    voices.find((voice) => /david|natural|google/i.test(voice.name)) ||
+    (voices.length > 0 ? voices[0] : null)
+  );
+}
+
 export default function SettingsPage() {
   const router = useRouter();
+  const { isElectron, tts } = useElectron();
   const [voice, setVoice] = useState<VoiceKey>("echo");
+  const [ttsProvider, setTtsProvider] = useState<TtsProvider>("browser");
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
   const [enablePingPong, setEnablePingPong] = useState(true);
   const [enableChess, setEnableChess] = useState(true);
@@ -109,6 +138,12 @@ export default function SettingsPage() {
   });
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [calendarMessage, setCalendarMessage] = useState<string | null>(null);
+  const [piperStatus, setPiperStatus] = useState<PiperStatus | null>(null);
+  const [browserVoiceStatus, setBrowserVoiceStatus] = useState<BrowserVoiceStatus>({
+    selectedVoiceName: null,
+    exactMatchAvailable: false,
+    totalVoices: 0,
+  });
 
   const loadCalendarStatus = async () => {
     setCalendarLoading(true);
@@ -126,15 +161,71 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const savedVoice = (localStorage.getItem("selectedVoice") as VoiceKey) || "echo";
+    const savedTtsProvider = localStorage.getItem("selectedTtsProvider");
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
 
     setVoice(savedVoice);
+    if (savedTtsProvider === "browser" || savedTtsProvider === "server" || savedTtsProvider === "piper") {
+      setTtsProvider(savedTtsProvider);
+    }
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
     void loadCalendarStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!isElectron) {
+      setPiperStatus(null);
+      return;
+    }
+
+    let active = true;
+
+    void tts.status(voice)
+      .then((status) => {
+        if (active) {
+          setPiperStatus(status);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load Piper status:", error);
+        if (active) {
+          setPiperStatus({ available: false, reason: "Unable to read Piper configuration." });
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isElectron, tts, voice]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.speechSynthesis) {
+      return;
+    }
+
+    const updateBrowserVoiceStatus = () => {
+      const voices = window.speechSynthesis.getVoices();
+      const preferredVoice = selectPreferredBrowserVoice(voices);
+
+      setBrowserVoiceStatus({
+        selectedVoiceName: preferredVoice?.name || null,
+        exactMatchAvailable: voices.some(
+          (voice) => /google uk english male/i.test(voice.name) || /google uk english male/i.test(voice.voiceURI)
+        ),
+        totalVoices: voices.length,
+      });
+    };
+
+    updateBrowserVoiceStatus();
+    window.speechSynthesis.addEventListener("voiceschanged", updateBrowserVoiceStatus);
+
+    return () => {
+      window.speechSynthesis.removeEventListener("voiceschanged", updateBrowserVoiceStatus);
+    };
   }, []);
 
   useEffect(() => {
@@ -155,6 +246,11 @@ export default function SettingsPage() {
   const handleVoiceChange = (newVoice: VoiceKey) => {
     setVoice(newVoice);
     localStorage.setItem("selectedVoice", newVoice);
+  };
+
+  const handleTtsProviderChange = (provider: TtsProvider) => {
+    setTtsProvider(provider);
+    localStorage.setItem("selectedTtsProvider", provider);
   };
 
   const handleAutoPlayChange = (checked: boolean) => {
@@ -292,9 +388,99 @@ export default function SettingsPage() {
                   })}
                 </div>
 
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Speech Engine</p>
+                    <h3 className="mt-2 text-lg font-semibold tracking-tight">Choose how replies are spoken</h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      Browser uses built-in speech synthesis, server uses the API response audio, and Piper uses the local Electron voice when it is configured on this machine.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    {([
+                      {
+                        id: "browser",
+                        title: "Browser",
+                        description: "Uses the operating system voice already available in the browser runtime.",
+                      },
+                      {
+                        id: "server",
+                        title: "Server",
+                        description: "Uses audio returned from the chat API when server-side TTS is enabled.",
+                      },
+                      {
+                        id: "piper",
+                        title: "Piper",
+                        description: isElectron
+                          ? piperStatus?.available
+                            ? "Uses the local Piper CLI through Electron for offline desktop playback."
+                            : `Electron desktop voice. ${piperStatus?.reason || "Piper is not configured yet."}`
+                          : "Available in the Electron app when Piper is installed and configured.",
+                      },
+                    ] as Array<{ id: TtsProvider; title: string; description: string }>).map((option) => {
+                      const selected = ttsProvider === option.id;
+                      const disabled = option.id === "piper" && isElectron && piperStatus?.available === false;
+
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => handleTtsProviderChange(option.id)}
+                          disabled={disabled}
+                          className={`rounded-[24px] border px-5 py-5 text-left transition-all ${
+                            selected
+                              ? "border-primary/50 bg-primary/12 shadow-[0_0_40px_hsl(var(--primary)/0.15)]"
+                              : "border-border/70 bg-background/35 hover:border-primary/25 hover:bg-background/55"
+                          } ${disabled ? "cursor-not-allowed opacity-60 hover:border-border/70 hover:bg-background/35" : ""}`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-lg font-semibold text-foreground">{option.title}</span>
+                            {selected && <CheckCircle2 className="h-5 w-5 text-primary" />}
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-muted-foreground">{option.description}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {isElectron && (
+                    <div className="rounded-2xl border border-border/70 bg-background/35 px-5 py-4">
+                      <p className="text-sm font-semibold text-foreground">Piper desktop status</p>
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                        {piperStatus?.available
+                          ? `Configured and ready${piperStatus.model ? ` with model ${piperStatus.model}` : ""}.`
+                          : piperStatus?.reason || "Checking Piper configuration..."}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="rounded-2xl border border-border/70 bg-background/35 px-5 py-4">
+                    <p className="text-sm font-semibold text-foreground">Current speech routing</p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      Active engine: <span className="font-medium text-foreground">{ttsProvider}</span>
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      Browser voice selected: <span className="font-medium text-foreground">{browserVoiceStatus.selectedVoiceName || "No browser voice detected yet"}</span>
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      {browserVoiceStatus.exactMatchAvailable
+                        ? "Google UK English Male is available in this browser."
+                        : browserVoiceStatus.totalVoices > 0
+                          ? "Google UK English Male is not installed here, so Loco is falling back to another available British voice."
+                          : "No browser voices have been reported yet by speech synthesis."}
+                    </p>
+                    {ttsProvider !== "browser" && (
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                        Browser voice preferences do not affect playback while the engine is set to {ttsProvider}.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
                 <div className="rounded-2xl border border-primary/20 bg-primary/10 px-5 py-4">
                   <p className="text-sm leading-6 text-muted-foreground">
-                    Voice playback still depends on browser or Electron audio availability. The selected profile changes tone choice and keeps the interface consistent with your preferred mode.
+                    The selected voice profile controls tone, while the speech engine decides where playback comes from. Browser is the safest fallback, server depends on API audio being enabled, and Piper gives you local desktop playback when configured.
                   </p>
                 </div>
               </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
@@ -9,15 +9,36 @@ import { Settings, Trash2, Mic, Send, X, Copy, Check, Undo2, Play, Pause, Volume
 import { useSpeechRecognition } from "@/tools/hooks/useSpeechRecognition";
 import { useAudioPlayer } from "@/tools/hooks/useAudioPlayer";
 import { useElectron } from "@/tools/hooks/useElectron";
+import {
+  createBrowserFileAttachments,
+  createBrowserFolderAttachments,
+  enrichAudioAttachments,
+} from "@/tools/hooks/utils/attachmentHelpers";
 import { parseResponse } from "@/tools/hooks/utils/messageParser";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 import { callAIAPI } from "@/tools/hooks/utils/apiClient";
+import { formatBytes, type AttachmentContextItem } from "@/lib/attachmentContext";
 
 
 // ── Types ──
 interface Message {
   role: "user" | "assistant";
   content: string;
+  meta?: {
+    memoryHit?: boolean;
+    memorySources?: string[];
+    memoryMatches?: {
+      assistantMemories?: Array<{
+        content: string;
+        kind: string;
+      }>;
+      conversationMatches?: Array<{
+        date: string;
+        userText: string;
+        assistantText: string;
+      }>;
+    };
+  };
 }
 
 interface ChatSession {
@@ -44,6 +65,19 @@ interface CodeBlock {
 interface HighlightToken {
   value: string;
   className: string;
+}
+
+interface AttachmentPickerItem extends AttachmentContextItem {
+  audioBase64?: string;
+}
+
+type TtsProvider = "browser" | "server" | "piper";
+
+interface LastAudioClip {
+  provider: TtsProvider;
+  text: string;
+  base64Audio?: string;
+  mimeType?: string;
 }
 
 // ── Data ──
@@ -529,33 +563,74 @@ const stripUrlsFromText = (text: string): string => {
   return cleaned;
 };
 
+function chunkSpeechText(text: string) {
+  const phraseChunks = text
+    .replace(/\s*[-–—]\s*/g, ", ")
+    .split(/(?<=[.!?…;:])\s+|(?<=,)\s+/)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+
+  const chunks: string[] = [];
+
+  for (const phrase of phraseChunks) {
+    const words = phrase.split(/\s+/).filter(Boolean);
+
+    if (words.length <= 12) {
+      chunks.push(phrase);
+      continue;
+    }
+
+    for (let index = 0; index < words.length; index += 10) {
+      chunks.push(words.slice(index, index + 10).join(" "));
+    }
+  }
+
+  return chunks;
+}
+
+function selectPreferredBrowserVoice(voices: SpeechSynthesisVoice[], voiceIndex: number) {
+  return (
+    voices.find((voice) => /google uk english male/i.test(voice.name) || /google uk english male/i.test(voice.voiceURI)) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en-gb") && /daniel|george|arthur|alfie/i.test(voice.name)) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en-gb") && /david|natural|google/i.test(voice.name)) ||
+    voices.find((voice) => voice.lang.toLowerCase().startsWith("en-gb")) ||
+    voices.find((voice) => /david|natural|google/i.test(voice.name)) ||
+    (voices.length > 0 ? voices[voiceIndex % voices.length] : null)
+  );
+}
+
 // Helper for natural chunked speech synthesis
-function speakChunks(text: string, voiceIndex: number) {
+function speakChunks(text: string, voiceIndex: number, retryCount = 0) {
   if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
 
-  // Split into thought-based chunks for JARVIS-style delivery
-  const chunks = text
-    .split(/(?<=[.!?…])\s+|(?<=,)\s+(?=[A-Z])/)
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+  const chunks = chunkSpeechText(text);
+
+  if (chunks.length === 0) {
+    return;
+  }
 
   const voices = window.speechSynthesis.getVoices();
-  // Prefer a deep, natural-sounding voice (JARVIS-style)
-  const preferredVoice =
-    voices.find(v => v.name.toLowerCase().includes("david")) ||
-    voices.find(v => v.name.toLowerCase().includes("natural")) ||
-    voices.find(v => v.name.toLowerCase().includes("google")) ||
-    (voices.length > 0 ? voices[voiceIndex % voices.length] : null);
+
+  if (voices.length === 0 && retryCount < 3) {
+    window.setTimeout(() => speakChunks(text, voiceIndex, retryCount + 1), 150);
+    return;
+  }
+
+  const preferredVoice = selectPreferredBrowserVoice(voices, voiceIndex);
 
   function speakNext(remaining: string[]) {
     if (!remaining.length) return;
     const utterance = new SpeechSynthesisUtterance(remaining[0]);
-    utterance.rate = 0.92;
-    utterance.pitch = 1.0;
+    utterance.lang = preferredVoice?.lang || "en-GB";
+    utterance.rate = 0.9;
+    utterance.pitch = 0.92;
     utterance.volume = 1.0;
     if (preferredVoice) utterance.voice = preferredVoice;
-    utterance.onend = () => speakNext(remaining.slice(1));
+    utterance.onend = () => {
+      const pauseDuration = /[.!?…]$/.test(remaining[0]) ? 220 : /[,;:]$/.test(remaining[0]) ? 140 : 110;
+      window.setTimeout(() => speakNext(remaining.slice(1)), pauseDuration);
+    };
     window.speechSynthesis.speak(utterance);
   }
 
@@ -565,7 +640,7 @@ function speakChunks(text: string, voiceIndex: number) {
 // ── Main Component ──
 export default function Home() {
   const router = useRouter();
-  const { isElectron, clipboard } = useElectron();
+  const { isElectron, clipboard, attachments: electronAttachments, tts } = useElectron();
   
   // Start screen state - always start false to avoid hydration mismatch
   const [showStartScreen, setShowStartScreen] = useState(false);
@@ -588,8 +663,9 @@ export default function Home() {
   const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState<Array<{ emoji: string; text: string }>>([]);
-  const [lastAudioBase64, setLastAudioBase64] = useState<string | null>(null);
+  const [lastAudioClip, setLastAudioClip] = useState<LastAudioClip | null>(null);
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
+  const [ttsProvider, setTtsProvider] = useState<TtsProvider>("browser");
   const [isSpeechPaused, setIsSpeechPaused] = useState(false);
   const [enablePingPong, setEnablePingPong] = useState(true);
   const [enableChess, setEnableChess] = useState(true);
@@ -597,6 +673,11 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [deletingAllHistory, setDeletingAllHistory] = useState(false);
+  const [expandedMemoryHits, setExpandedMemoryHits] = useState<number[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentContextItem[]>([]);
+  const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
   const activeSessionIdRef = useRef<string | null>(null);
 
   const updateActiveSessionId = (sessionId: string | null) => {
@@ -761,11 +842,41 @@ export default function Home() {
     }
   };
 
+  const deleteAllHistory = async () => {
+    if (deletingAllHistory || chatSessions.length === 0) {
+      return;
+    }
+
+    const confirmed = window.confirm("Delete all saved chat history? This cannot be undone.");
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingAllHistory(true);
+    try {
+      const response = await fetch("/api/chat-sessions", { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error(`Failed to delete all chat sessions: ${response.status}`);
+      }
+
+      localStorage.removeItem("chatSessions");
+      localStorage.removeItem("conversationHistory");
+      setChatSessions([]);
+      updateActiveSessionId(null);
+      setMessages([]);
+      syncTerminalFromMessages([]);
+      setShowHistory(false);
+    } finally {
+      setDeletingAllHistory(false);
+    }
+  };
+
   const startNewChat = () => {
     setMessages([]);
     updateActiveSessionId(null);
     setShowTerminal(false); setExtractedCode(""); setCodeBlocks([]); setActiveCodeBlockIndex(0); setTerminalView("code"); setTerminalCommands([]);
-    setLastAudioBase64(null);
+    setLastAudioClip(null);
+    setAttachments([]);
     if (window.speechSynthesis) { window.speechSynthesis.cancel(); setIsSpeechPaused(false); }
     setShowHistory(false);
   };
@@ -776,6 +887,158 @@ export default function Home() {
   const prevListeningRef = useRef(listening);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const attachmentMenuRef = useRef<HTMLDivElement>(null);
+
+  const mergeAttachments = (incoming: AttachmentContextItem[]) => {
+    setAttachments((currentAttachments) => {
+      const merged = new Map(currentAttachments.map((attachment) => [attachment.id, attachment]));
+      for (const attachment of incoming) {
+        merged.set(attachment.id, attachment);
+      }
+      return Array.from(merged.values());
+    });
+  };
+
+  const removeAttachment = (attachmentId: string) => {
+    setAttachments((currentAttachments) => currentAttachments.filter((attachment) => attachment.id !== attachmentId));
+  };
+
+  const speakWithBrowser = (text: string) => {
+    if (!window.speechSynthesis) {
+      return false;
+    }
+
+    setIsSpeechPaused(false);
+    const voiceMap: { [key: string]: number } = { alloy: 0, echo: 1, fable: 2 };
+    speakChunks(text, voiceMap[voice] ?? 1);
+    return true;
+  };
+
+  const synthesizePiperAudio = async (text: string) => {
+    if (!isElectron) {
+      return null;
+    }
+
+    try {
+      const result = await tts.synthesize(text, voice);
+      return {
+        provider: "piper" as const,
+        text,
+        base64Audio: result.audioBase64,
+        mimeType: result.mimeType,
+      };
+    } catch (error) {
+      console.error("Piper synthesis failed:", error);
+      return null;
+    }
+  };
+
+  const playSavedClip = async (clip: LastAudioClip) => {
+    if (clip.provider === "browser") {
+      return speakWithBrowser(clip.text);
+    }
+
+    if (clip.provider === "piper") {
+      const readyClip = clip.base64Audio ? clip : await synthesizePiperAudio(clip.text);
+      if (!readyClip?.base64Audio) {
+        return false;
+      }
+
+      setLastAudioClip(readyClip);
+      playAudio(readyClip.base64Audio, readyClip.mimeType || "audio/wav");
+      return true;
+    }
+
+    if (!clip.base64Audio) {
+      return false;
+    }
+
+    playAudio(clip.base64Audio, clip.mimeType || "audio/mp3");
+    return true;
+  };
+
+  const toggleMemoryHit = (messageIndex: number) => {
+    setExpandedMemoryHits((currentExpanded) =>
+      currentExpanded.includes(messageIndex)
+        ? currentExpanded.filter((entry) => entry !== messageIndex)
+        : [...currentExpanded, messageIndex]
+    );
+  };
+
+  const finalizeAttachments = async (incoming: AttachmentPickerItem[]) => {
+    if (incoming.length === 0) {
+      return;
+    }
+
+    setAttachmentBusy(true);
+    try {
+      const enriched = await enrichAudioAttachments(incoming);
+      mergeAttachments(enriched);
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const handleBrowserFilesSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = "";
+    setShowAttachmentMenu(false);
+
+    if (selectedFiles.length === 0) {
+      return;
+    }
+
+    setAttachmentBusy(true);
+    try {
+      const builtAttachments = await createBrowserFileAttachments(selectedFiles);
+      const enriched = await enrichAudioAttachments(builtAttachments);
+      mergeAttachments(enriched);
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const handleBrowserFolderSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files || []);
+    event.target.value = "";
+    setShowAttachmentMenu(false);
+
+    if (selectedFiles.length === 0) {
+      return;
+    }
+
+    setAttachmentBusy(true);
+    try {
+      const builtAttachments = await createBrowserFolderAttachments(selectedFiles);
+      mergeAttachments(builtAttachments);
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const handlePickFiles = async () => {
+    setShowAttachmentMenu(false);
+
+    if (isElectron) {
+      await finalizeAttachments(await electronAttachments.openFiles());
+      return;
+    }
+
+    fileInputRef.current?.click();
+  };
+
+  const handlePickFolder = async () => {
+    setShowAttachmentMenu(false);
+
+    if (isElectron) {
+      await finalizeAttachments(await electronAttachments.openFolder());
+      return;
+    }
+
+    folderInputRef.current?.click();
+  };
 
   // ── Check start screen on mount (client-only) ──
   useEffect(() => {
@@ -794,11 +1057,11 @@ export default function Home() {
     const lowerMsg = userMessage.toLowerCase();
     if (lowerMsg.includes("read this out loud") || lowerMsg.includes("use voice")) {
       setAutoPlayAudio(true);
-      if (messages.length > 0 && window.speechSynthesis) {
+      if (messages.length > 0) {
         const cleanedMessage = stripUrlsFromText(messages[messages.length - 1]?.content || "");
-        const voiceMap: { [key: string]: number } = { alloy: 0, echo: 1, fable: 2 };
-        speakChunks(cleanedMessage, voiceMap[voice] ?? 1);
-        setLastAudioBase64("browser-tts");
+        const nextClip: LastAudioClip = { provider: "browser", text: cleanedMessage };
+        setLastAudioClip(nextClip);
+        void playSavedClip(nextClip);
       }
       setUserMessage(""); // Clear after action
     }
@@ -815,11 +1078,15 @@ export default function Home() {
     // Load settings from localStorage
     const savedVoice = localStorage.getItem("selectedVoice") as VoiceKey || "echo";
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
+    const savedTtsProvider = localStorage.getItem("selectedTtsProvider");
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
     
     setVoice(savedVoice);
     setAutoPlayAudio(savedAutoPlay);
+    if (savedTtsProvider === "browser" || savedTtsProvider === "server" || savedTtsProvider === "piper") {
+      setTtsProvider(savedTtsProvider);
+    }
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
     void loadSessionsFromServer().catch((error) => {
@@ -831,6 +1098,21 @@ export default function Home() {
       window.speechSynthesis.getVoices();
     }
   }, []);
+
+  useEffect(() => {
+    if (!showAttachmentMenu) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!attachmentMenuRef.current?.contains(event.target as Node)) {
+        setShowAttachmentMenu(false);
+      }
+    };
+
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => window.removeEventListener("mousedown", handlePointerDown);
+  }, [showAttachmentMenu]);
 
   // ── Chat logic ──
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
@@ -881,28 +1163,31 @@ export default function Home() {
   }, []);
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && attachments.length === 0) || loading) return;
     setLoading(true);
+    const pendingAttachments = attachments;
+    const outboundInput = input.trim() || "Analyze the attached files and tell me what matters.";
     
     try {
-      const updated: Message[] = [...messages, { role: "user", content: input }];
+      const updated: Message[] = [...messages, { role: "user", content: outboundInput }];
       const currentSessionId = activeSessionIdRef.current;
       setMessages(updated);
       setInput("");
       setUserMessage("");
+      setAttachments([]);
 
       // Check for game triggers
-      if (enablePingPong && input.toLowerCase().includes("ping pong")) {
+      if (enablePingPong && outboundInput.toLowerCase().includes("ping pong")) {
         router.push("/experimental/game");
         return;
       }
-      if (enableChess && input.toLowerCase().includes("chess")) {
+      if (enableChess && outboundInput.toLowerCase().includes("chess")) {
         router.push("/experimental/chess");
         return;
       }
 
       const session = await persistSession(updated, currentSessionId);
-      const result = await callAIAPI(updated, voice, session?.id ?? currentSessionId);
+      const result = await callAIAPI(updated, voice, session?.id ?? currentSessionId, pendingAttachments);
       
       if (!result.success || !result.data) {
         setLoading(false);
@@ -929,25 +1214,49 @@ export default function Home() {
       }
       
       setTerminalCommands(parsed.commands);
-      const nextMessages: Message[] = [...updated, { role: "assistant", content: message }];
+      const nextMessages: Message[] = [...updated, {
+        role: "assistant",
+        content: message,
+        meta: {
+          memoryHit: result.data.memoryHit,
+          memorySources: result.data.memorySources,
+          memoryMatches: result.data.memoryMatches,
+        },
+      }];
       setMessages(nextMessages);
       await persistSession(nextMessages, session?.id ?? currentSessionId);
       
-      // TTS
-      if (autoPlayAudio && window.speechSynthesis) {
-        setIsSpeechPaused(false);
-        const cleanedMessage = stripUrlsFromText(message);
-        const voiceMap: { [key: string]: number } = { alloy: 0, echo: 1, fable: 2 };
-        speakChunks(cleanedMessage, voiceMap[voice] ?? 1);
-        setLastAudioBase64("browser-tts");
+      const cleanedMessage = stripUrlsFromText(message);
+      let nextAudioClip: LastAudioClip | null = null;
+
+      if (ttsProvider === "piper") {
+        nextAudioClip = { provider: "piper", text: cleanedMessage };
+      } else if (ttsProvider === "browser") {
+        nextAudioClip = { provider: "browser", text: cleanedMessage };
       } else if (result.data.audio) {
-        setLastAudioBase64(result.data.audio);
-        if (autoPlayAudio) {
-          playAudio(result.data.audio);
+        nextAudioClip = {
+          provider: "server",
+          text: cleanedMessage,
+          base64Audio: result.data.audio,
+          mimeType: "audio/mp3",
+        };
+      } else if (window.speechSynthesis) {
+        nextAudioClip = { provider: "browser", text: cleanedMessage };
+      }
+
+      setLastAudioClip(nextAudioClip);
+
+      if (autoPlayAudio && nextAudioClip) {
+        const played = await playSavedClip(nextAudioClip);
+        if (!played && nextAudioClip.provider !== "browser" && window.speechSynthesis) {
+          const fallbackClip: LastAudioClip = { provider: "browser", text: cleanedMessage };
+          setLastAudioClip(fallbackClip);
+          speakWithBrowser(cleanedMessage);
         }
       }
     } catch (error) {
       console.error("AI Error:", error);
+      setAttachments(pendingAttachments);
     } finally {
       setLoading(false);
       inputRef.current?.focus();
@@ -957,6 +1266,7 @@ export default function Home() {
   const handleClear = () => { 
     setMessages([]); 
     updateActiveSessionId(null);
+    setAttachments([]);
     setShowTerminal(false);
     setExtractedCode("");
     setCodeLanguage("javascript");
@@ -968,7 +1278,7 @@ export default function Home() {
       window.speechSynthesis.cancel();
       setIsSpeechPaused(false);
     }
-    setLastAudioBase64(null);
+    setLastAudioClip(null);
   };
 
   const handleUndo = () => {
@@ -989,7 +1299,7 @@ export default function Home() {
       window.speechSynthesis.cancel();
       setIsSpeechPaused(false);
     }
-    setLastAudioBase64(null);
+    setLastAudioClip(null);
   };
 
   const handleTogglePause = () => {
@@ -1003,18 +1313,12 @@ export default function Home() {
     }
   };
 
-  const handleReplay = () => {
-    if (lastAudioBase64 === "browser-tts") {
-      const lastMessage = messages.length > 0 ? messages[messages.length - 1]?.content : "";
-      if (lastMessage && window.speechSynthesis) {
-        const cleanedMessage = stripUrlsFromText(lastMessage);
-        const voiceMap: { [key: string]: number } = { alloy: 0, echo: 1, fable: 2 };
-        speakChunks(cleanedMessage, voiceMap[voice] ?? 1);
-        setIsSpeechPaused(false);
-      }
-    } else if (lastAudioBase64) {
-      playAudio(lastAudioBase64);
+  const handleReplay = async () => {
+    if (!lastAudioClip) {
+      return;
     }
+
+    await playSavedClip(lastAudioClip);
   };
 
   const previewableCodeBlocks = codeBlocks.filter(isCodePreviewBlock);
@@ -1200,9 +1504,9 @@ export default function Home() {
         </div>
         <div className="flex items-center gap-2">
           {/* Audio controls */}
-          {lastAudioBase64 && (
+          {lastAudioClip && (
             <>
-              {lastAudioBase64 === "browser-tts" && (
+              {lastAudioClip.provider === "browser" && (
                 <Button 
                   variant="ghost" 
                   size="icon" 
@@ -1281,9 +1585,22 @@ export default function Home() {
                   <X className="w-4 h-4" />
                 </Button>
               </div>
-              <div className="px-3 py-2 border-b border-border/30">
+              <div className="px-3 py-2 border-b border-border/30 space-y-2">
                 <Button variant="surface" size="sm" className="w-full gap-2 text-xs" onClick={startNewChat}>
                   <Plus className="w-3.5 h-3.5" /> New Chat
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full gap-2 text-xs text-muted-foreground hover:text-destructive"
+                  onClick={() => {
+                    void deleteAllHistory().catch((error) => {
+                      console.error("Failed to delete all chat history:", error);
+                    });
+                  }}
+                  disabled={deletingAllHistory || chatSessions.length === 0}
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> {deletingAllHistory ? "Deleting..." : "Delete All History"}
                 </Button>
               </div>
               <div className="flex-1 overflow-y-auto py-2">
@@ -1365,6 +1682,57 @@ export default function Home() {
                     <div className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
                       msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-card border border-border rounded-bl-sm text-card-foreground"
                     }`}>
+                      {msg.role === "assistant" && msg.meta?.memoryHit && (
+                        <div className="mb-2">
+                          <button
+                            type="button"
+                            className="flex items-center gap-2 text-left"
+                            onClick={() => toggleMemoryHit(i)}
+                            title={msg.meta.memorySources?.length ? `Memory hit: ${msg.meta.memorySources.join(", ")}` : "Memory hit"}
+                          >
+                            <span className="inline-flex items-center rounded-full border border-primary/25 bg-primary/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-primary">
+                              Memory Hit
+                            </span>
+                          </button>
+                          {msg.meta.memorySources?.length ? (
+                            <span className="mt-1 block text-[11px] text-muted-foreground">
+                              {msg.meta.memorySources.join(" + ")}
+                            </span>
+                          ) : null}
+                          {expandedMemoryHits.includes(i) && msg.meta.memoryMatches && (
+                            <div className="mt-2 space-y-2 rounded-xl border border-border/60 bg-background/40 p-3 text-[11px] leading-relaxed text-muted-foreground">
+                              {(msg.meta.memoryMatches.assistantMemories?.length || 0) > 0 && (
+                                <div>
+                                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary/80">Remembered facts</div>
+                                  <div className="space-y-1">
+                                    {msg.meta.memoryMatches.assistantMemories?.map((memory, memoryIndex) => (
+                                      <div key={`${i}-assistant-memory-${memoryIndex}`} className="rounded-lg bg-card/60 px-2 py-1.5 text-foreground/90">
+                                        {memory.content}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {(msg.meta.memoryMatches.conversationMatches?.length || 0) > 0 && (
+                                <div>
+                                  <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-primary/80">Prior conversation</div>
+                                  <div className="space-y-1.5">
+                                    {msg.meta.memoryMatches.conversationMatches?.map((match, matchIndex) => (
+                                      <div key={`${i}-conversation-memory-${matchIndex}`} className="rounded-lg bg-card/60 px-2 py-2">
+                                        <div className="mb-1 text-[10px] uppercase tracking-[0.08em] text-primary/70">{match.date}</div>
+                                        <div className="text-foreground/90">User: {match.userText}</div>
+                                        {match.assistantText ? (
+                                          <div className="mt-1 text-muted-foreground">Loco: {match.assistantText}</div>
+                                        ) : null}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {msg.role === "assistant"
                         ? (
                             <ReactMarkdown components={{
@@ -1406,36 +1774,126 @@ export default function Home() {
 
           {/* Input */}
           <div className="px-6 py-4 border-t border-border/50 bg-card/30 backdrop-blur-xl">
-            <div className="max-w-3xl mx-auto flex gap-3">
-              <input 
-                ref={inputRef} 
-                type="text" 
-                value={input} 
-                onChange={(e) => { setInput(e.target.value); setUserMessage(e.target.value); }}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                disabled={loading} 
-                placeholder="Ask anything..."
-                className="flex-1 px-4 py-3 rounded-xl bg-input/50 border border-border text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/40 transition-all disabled:opacity-50"
-              />
-              <Button onClick={handleSend} disabled={loading || !input.trim()} variant="glow" className="px-5">
-                {loading ? (
-                  <div className="flex gap-1">
-                    {[0, 1, 2].map((j) => <motion.span key={j} className="w-1.5 h-1.5 rounded-full bg-primary-foreground" animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, delay: j * 0.15, repeat: Infinity }} />)}
-                  </div>
-                ) : <Send className="w-4 h-4" />}
-              </Button>
-              {speechSupported && (
-                <Button 
-                  variant={listening ? "glow" : "surface"} 
-                  size="icon" 
-                  onClick={toggleListening}
-                  disabled={loading}
-                  title="Voice input"
-                  className={listening ? "animate-pulse" : ""}
-                >
-                  <Mic className="w-4 h-4" />
-                </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleBrowserFilesSelected}
+            />
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleBrowserFolderSelected}
+              {...({ webkitdirectory: "", directory: "" } as any)}
+            />
+            <div className="max-w-3xl mx-auto space-y-3">
+              {(attachments.length > 0 || attachmentBusy) && (
+                <div className="rounded-2xl border border-border/60 bg-background/40 px-3 py-3">
+                  {attachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {attachments.map((attachment) => (
+                        <div
+                          key={attachment.id}
+                          className="flex items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-xs text-foreground"
+                        >
+                          <span className="max-w-[240px] truncate">
+                            {attachment.name}
+                            {attachment.kind === "folder" && typeof attachment.fileCount === "number" ? ` · ${attachment.fileCount} files` : ""}
+                            {` · ${formatBytes(attachment.size)}`}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => removeAttachment(attachment.id)}
+                            className="text-muted-foreground transition-colors hover:text-foreground"
+                            aria-label={`Remove ${attachment.name}`}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {attachmentBusy && (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Analyzing attachments...
+                    </p>
+                  )}
+                </div>
               )}
+              <div className="flex gap-3" ref={attachmentMenuRef}>
+                <div className="relative">
+                  <Button
+                    type="button"
+                    variant="surface"
+                    size="icon"
+                    onClick={() => setShowAttachmentMenu((current) => !current)}
+                    disabled={loading || attachmentBusy}
+                    title="Add files or folder"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </Button>
+                  <AnimatePresence>
+                    {showAttachmentMenu && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                        transition={{ duration: 0.16 }}
+                        className="absolute bottom-[calc(100%+12px)] left-0 z-30 w-52 rounded-2xl border border-border/70 bg-card/95 p-2 shadow-2xl backdrop-blur-xl"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void handlePickFiles()}
+                          className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted/60"
+                        >
+                          <span>Add files</span>
+                          <span className="text-xs text-muted-foreground">code, audio, docs</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handlePickFolder()}
+                          className="mt-1 flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-foreground transition-colors hover:bg-muted/60"
+                        >
+                          <span>Add folder</span>
+                          <span className="text-xs text-muted-foreground">project scan</span>
+                        </button>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+                <input 
+                  ref={inputRef} 
+                  type="text" 
+                  value={input} 
+                  onChange={(e) => { setInput(e.target.value); setUserMessage(e.target.value); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                  disabled={loading} 
+                  placeholder={attachments.length > 0 ? "Ask Loco to analyze what you attached..." : "Ask anything..."}
+                  className="flex-1 px-4 py-3 rounded-xl bg-input/50 border border-border text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/40 transition-all disabled:opacity-50"
+                />
+                <Button onClick={handleSend} disabled={loading || (!input.trim() && attachments.length === 0)} variant="glow" className="px-5">
+                  {loading ? (
+                    <div className="flex gap-1">
+                      {[0, 1, 2].map((j) => <motion.span key={j} className="w-1.5 h-1.5 rounded-full bg-primary-foreground" animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, delay: j * 0.15, repeat: Infinity }} />)}
+                    </div>
+                  ) : <Send className="w-4 h-4" />}
+                </Button>
+                {speechSupported && (
+                  <Button 
+                    variant={listening ? "glow" : "surface"} 
+                    size="icon" 
+                    onClick={toggleListening}
+                    disabled={loading || attachmentBusy}
+                    title="Voice input"
+                    className={listening ? "animate-pulse" : ""}
+                  >
+                    <Mic className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         </div>

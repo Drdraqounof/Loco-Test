@@ -1,10 +1,11 @@
 # Build stage
-FROM node:18-alpine AS builder
+FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy package files and Prisma schema first so client generation works during install
 COPY package*.json ./
+COPY prisma ./prisma
 
 # Install dependencies
 RUN npm ci
@@ -16,23 +17,25 @@ COPY . .
 RUN npm run build
 
 # Runtime stage
-FROM node:18-alpine
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Install curl for healthcheck
-RUN apk add --no-cache wget
+# Install healthcheck tooling and OpenSSL runtime used by Prisma
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends wget openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
+# Copy package files, installed modules, build output, Prisma assets, and startup script
 COPY package*.json ./
-
-# Install only production dependencies
-RUN npm ci --only=production
-
-# Copy built app from builder
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
+COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/next.config.ts ./next.config.ts
+COPY --from=builder /app/docker-entrypoint.sh ./docker-entrypoint.sh
+
+RUN chmod +x ./docker-entrypoint.sh
 
 # Expose port
 EXPOSE 3000
@@ -41,5 +44,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
 
-# Start the app
-CMD ["npm", "start"]
+# Run Prisma setup, then start the app
+ENTRYPOINT ["./docker-entrypoint.sh"]

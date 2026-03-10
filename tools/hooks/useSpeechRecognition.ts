@@ -142,6 +142,8 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         setLabel("processing...");
+        speechErrorRef.current = null;
+        setSpeechError(null);
 
         const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || "audio/webm" });
 
@@ -166,10 +168,14 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
             setUserMessage(data.text.trim());
           } else {
             console.warn("[STT] Transcription failed:", data.error);
+            speechErrorRef.current = "transcription-failed";
+            setSpeechError("transcription-failed");
             setLabel(typeof data.error === "string" ? data.error : "couldn't transcribe - try again");
             setTimeout(() => setLabel("tap to speak"), 3000);
           }
         } catch {
+          speechErrorRef.current = "transcription-failed";
+          setSpeechError("transcription-failed");
           setLabel("transcription failed - try again");
           setTimeout(() => setLabel("tap to speak"), 3000);
         } finally {

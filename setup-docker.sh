@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Loco Docker Setup Script
-# Initializes the complete stack with database migrations
+# Initializes the complete stack and lets the app container run migrations on startup
 
 set -e  # Exit on any error
 
@@ -79,18 +79,15 @@ docker compose ps
 
 echo ""
 
-# Step 6: Run Prisma migrations
-echo "🗄️  Running database migrations..."
-docker compose exec -T app npm run prisma:migrate:deploy || true
-
 echo ""
 echo "✅ Setup complete!"
 echo ""
 echo "🌐 Visit: http://localhost:3000"
+echo "🗄️  Prisma migrations were applied automatically during app startup."
 echo ""
 echo "📚 Useful commands:"
 echo "   docker compose logs -f          # View logs"
 echo "   docker compose down              # Stop services"
 echo "   docker compose ps                # Check status"
-echo "   docker compose exec app bash     # Shell access to app"
+echo "   docker compose exec app sh       # Shell access to app"
 echo ""

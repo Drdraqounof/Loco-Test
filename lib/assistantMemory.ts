@@ -1,4 +1,15 @@
 import { prisma } from "@/lib/prisma";
+import { scoreMemoryRelevance } from "@/lib/memoryRetrieval";
+
+export interface RelevantAssistantMemoryMatch {
+  content: string;
+  kind: string;
+}
+
+export interface RelevantAssistantMemoryResult {
+  context: string;
+  matches: RelevantAssistantMemoryMatch[];
+}
 
 const EXPLICIT_MEMORY_PATTERN = /^(remember(?: that)?|for future reference|keep in mind|please remember)\s+/i;
 const MEMORY_RECALL_PATTERN = /(what|tell me|show me)[\s\S]*(remember|know) (?:about me|about us)?|what do you remember about me|what do you know about me|what are my preferences/i;
@@ -79,6 +90,24 @@ export async function listAssistantMemories(limit = 12) {
   });
 }
 
+export async function listRelevantAssistantMemories(query: string, limit = 4) {
+  const memories = await prisma.assistantMemory.findMany({
+    where: { source: "loco" },
+    orderBy: { updatedAt: "desc" },
+    take: 60,
+  });
+
+  return memories
+    .map((memory) => ({
+      memory,
+      score: scoreMemoryRelevance(query, memory.content),
+    }))
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit)
+    .map((entry) => entry.memory);
+}
+
 export async function buildAssistantMemoryContext(limit = 12) {
   const memories = await listAssistantMemories(limit);
   if (memories.length === 0) {
@@ -86,6 +115,24 @@ export async function buildAssistantMemoryContext(limit = 12) {
   }
 
   return `\nLong-term remembered user facts:\n${memories.map((memory) => `- ${memory.content}`).join("\n")}`;
+}
+
+export async function buildRelevantAssistantMemoryContext(query: string, limit = 4) {
+  const memories = await listRelevantAssistantMemories(query, limit);
+  if (memories.length === 0) {
+    return {
+      context: "",
+      matches: [],
+    } satisfies RelevantAssistantMemoryResult;
+  }
+
+  return {
+    context: `\nRelevant remembered facts for this message:\n${memories.map((memory) => `- ${memory.content}`).join("\n")}`,
+    matches: memories.map((memory) => ({
+      content: memory.content,
+      kind: memory.kind,
+    })),
+  } satisfies RelevantAssistantMemoryResult;
 }
 
 export async function formatAssistantMemoryRecall(limit = 12) {

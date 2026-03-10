@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  deleteAllConversationSessions,
   PersistedChatMessageInput,
   listConversationSessions,
   saveConversationSession,
@@ -29,6 +30,11 @@ export async function GET() {
   return NextResponse.json({
     sessions: sessions.map(toResponseSession),
   });
+}
+
+export async function DELETE() {
+  await deleteAllConversationSessions();
+  return NextResponse.json({ success: true });
 }
 
 export async function POST(request: NextRequest) {

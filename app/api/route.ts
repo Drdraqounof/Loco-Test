@@ -20,10 +20,14 @@ import {
 } from "@/lib/calendarIntent";
 import {
   buildPersistentMemoryContext,
+  buildRelevantConversationContext,
+  type RelevantConversationMatch,
   listRememberedCalendarEvents,
 } from "@/lib/chatMemory";
 import {
   buildAssistantMemoryContext,
+  buildRelevantAssistantMemoryContext,
+  type RelevantAssistantMemoryMatch,
   extractMemoryContent,
   formatAssistantMemoryRecall,
   inferImplicitMemoryCandidate,
@@ -37,6 +41,10 @@ import {
   getStoredCalendarConnection,
   listCalendarEvents,
 } from "@/lib/googleCalendar";
+import {
+  buildAttachmentPromptContext,
+  type AttachmentContextItem,
+} from "@/lib/attachmentContext";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -120,6 +128,19 @@ function isCancellationReply(text: string) {
   return /^(no|cancel|never mind|dont|don't add it|stop)\b/i.test(text.trim());
 }
 
+function looksLikeReplyDraftRequest(text: string) {
+  const normalized = normalizeWhitespace(text);
+
+  if (!normalized) {
+    return false;
+  }
+
+  const draftingPattern = /\b(how should i respond|how do i respond|help me respond|help me reply|draft(?: me)?(?: a)? reply|draft(?: me)?(?: an)? email|write(?: me)?(?: a)? reply|write(?: me)?(?: an)? email|what should i say|how should i answer|respond to this|reply to this|write back|send back)\b/i;
+  const emailThreadPattern = /\b(?:from|to|subject):\b|\b(?:happy monday|looking forward to|let me know what works|availability below|don't hesitate to reach out|cheers,)\b/i;
+
+  return draftingPattern.test(normalized) || (normalized.includes("@") && emailThreadPattern.test(normalized));
+}
+
 function looksLikeCalendarMemoryQuestion(text: string) {
   return /(what|which|show|list|remember|remind me)[\s\S]*(calendar|event|events|meeting|meetings|appointment|appointments|scheduled|schedule)/i.test(
     text.trim()
@@ -156,6 +177,9 @@ function formatRememberedEventsMessage(
 function fallbackCalendarTitleFromRequest(text: string) {
   const normalized = text.replace(/\s+/g, " ").trim();
   const patterns = [
+    /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:on\s+my\s+calend(?:a|e)r\s+)?to\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
+    /(?:remind(?: me)?(?: to)?|reminder)\s+(?:on\s+my\s+calend(?:a|e)r\s+)?to\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
+    /(?:remind(?: me)?(?: to)?|reminder)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
     /(?:reminder|event|appointment|meeting)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
     /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:for|about)?\s*(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
     /(?:for)\s+(.+?)(?=\s+(?:on|at|around)\b|$)/i,
@@ -163,9 +187,13 @@ function fallbackCalendarTitleFromRequest(text: string) {
 
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
-    const candidate = match?.[1]?.replace(/^(?:a|an|the)\s+/i, "").trim();
+    const candidate = match?.[1]
+      ?.replace(/^(?:a|an|the|my)\s+/i, "")
+      ?.replace(/^on\s+my\s+calend(?:a|e)r\s+to\s+/i, "")
+      .replace(/\s+(?:please|pls)$/i, "")
+      .trim();
     if (candidate) {
-      return candidate;
+      return candidate.charAt(0).toUpperCase() + candidate.slice(1);
     }
   }
 
@@ -176,8 +204,18 @@ function normalizeWhitespace(text: string) {
   return text.replace(/\s+/g, " ").trim();
 }
 
+function looksLikeCalendarCreateRequest(text: string) {
+  const normalized = normalizeWhitespace(text);
+  return /\b(remind(?: me)?(?: to)?|reminder|schedule|add|create|book|set[- ]?up|put|plan)\b/i.test(normalized)
+    && /\b(calendar|calender|event|events|appointment|appointments|meeting|meetings|today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|around\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(normalized);
+}
+
 function looksLikeLiveCalendarReadRequest(text: string) {
   const normalized = normalizeWhitespace(text);
+  if (looksLikeCalendarCreateRequest(normalized)) {
+    return false;
+  }
+
   return /(what(?:'s| is)|show|list|tell me|how busy)[\s\S]*(calendar|calender|schedule|agenda|events?)/i.test(normalized)
     || /(calendar|calender|schedule|agenda|events?)[\s\S]*(today|tomorrow|tonight|this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(normalized);
 }
@@ -267,7 +305,7 @@ function buildZonedIso(parts: { year: number; month: number; day: number }, hour
   return `${year}-${month}-${day}T${hour}:${minute}:${second}${offset}`;
 }
 
-function resolveCalendarDayRange(text: string, timeZone: string, now: Date) {
+function resolveCalendarDayRange(text: string, timeZone: string, now: Date, options?: { defaultToToday?: boolean }) {
   const normalized = normalizeWhitespace(text).toLowerCase();
   const weekdayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
   const current = getTimeZoneDateParts(now, timeZone);
@@ -276,15 +314,47 @@ function resolveCalendarDayRange(text: string, timeZone: string, now: Date) {
   let label = "today";
   let target = current;
 
+  if (/\bthis week\b/.test(normalized)) {
+    const daysFromMonday = currentWeekdayIndex === 0 ? 6 : currentWeekdayIndex - 1;
+    const weekStart = addDaysInTimeZone(now, timeZone, -daysFromMonday);
+    const weekEnd = addDaysInTimeZone(now, timeZone, 7 - daysFromMonday);
+
+    return {
+      label: "this week",
+      startIso: buildZonedIso(weekStart, 0, 0, 0, timeZone),
+      endIso: buildZonedIso(weekEnd, 0, 0, 0, timeZone),
+    };
+  }
+
+  if (/\bnext week\b/.test(normalized)) {
+    const daysFromMonday = currentWeekdayIndex === 0 ? 6 : currentWeekdayIndex - 1;
+    const nextWeekStart = addDaysInTimeZone(now, timeZone, 7 - daysFromMonday);
+    const nextWeekEnd = addDaysInTimeZone(now, timeZone, 14 - daysFromMonday);
+
+    return {
+      label: "next week",
+      startIso: buildZonedIso(nextWeekStart, 0, 0, 0, timeZone),
+      endIso: buildZonedIso(nextWeekEnd, 0, 0, 0, timeZone),
+    };
+  }
+
   if (/\btomorrow\b/.test(normalized)) {
     label = "tomorrow";
     target = addDaysInTimeZone(now, timeZone, 1);
-  } else if (/\btoday\b|\btonight\b/.test(normalized)) {
+  } else if (/\btoday\b|\btonight\b|\bcurrent(?:ly)?\b|\bright now\b|\bnow\b/.test(normalized)) {
     label = "today";
     target = current;
   } else {
     const weekdayMatch = normalized.match(/\b(?:(this|next)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
     if (!weekdayMatch) {
+      if (options?.defaultToToday) {
+        return {
+          label,
+          startIso: buildZonedIso(target, 0, 0, 0, timeZone),
+          endIso: buildZonedIso(addDaysInTimeZone(new Date(Date.UTC(target.year, target.month - 1, target.day, 12, 0, 0)), timeZone, 1), 0, 0, 0, timeZone),
+        };
+      }
+
       return null;
     }
 
@@ -329,26 +399,64 @@ function formatLiveCalendarEventsMessage(
     return `Your Google Calendar looks clear for ${label}.`;
   }
 
-  return `Here is your Google Calendar for ${label}:\n\n${events
-    .map((event) => {
-      if (!event.startIso) {
-        return `- ${event.title}`;
-      }
+  const shouldShowDate = /week/.test(label);
 
-      if (event.isAllDay) {
-        return `- ${event.title} (all day)${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
-      }
+  const formattedEvents = events.map((event, index) => {
+    const lines: string[] = [`${index + 1}. **${event.title}**`];
 
+    if (!event.startIso) {
+      if (event.htmlLink) {
+        lines.push(`   Open: [Google Calendar](${event.htmlLink})`);
+      }
+      return lines.join("\n");
+    }
+
+    if (event.isAllDay) {
+      if (shouldShowDate) {
+        const start = new Date(event.startIso);
+        const dateFormatter = new Intl.DateTimeFormat("en-US", {
+          weekday: "long",
+          month: "long",
+          day: "numeric",
+          timeZone,
+        });
+        lines.push(`   When: ${dateFormatter.format(start)} · All day`);
+      } else {
+        lines.push("   Time: All day");
+      }
+    } else {
       const start = new Date(event.startIso);
       const end = event.endIso ? new Date(event.endIso) : null;
-      const formatter = new Intl.DateTimeFormat("en-US", {
+      const timeFormatter = new Intl.DateTimeFormat("en-US", {
         timeStyle: "short",
         timeZone,
       });
+      const dateFormatter = new Intl.DateTimeFormat("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        timeZone,
+      });
 
-      return `- ${event.title} from ${formatter.format(start)}${end ? ` to ${formatter.format(end)}` : ""}${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
-    })
-    .join("\n")}`;
+      lines.push(
+        shouldShowDate
+          ? `   When: ${dateFormatter.format(start)} · ${timeFormatter.format(start)}${end ? ` to ${timeFormatter.format(end)}` : ""}`
+          : `   Time: ${timeFormatter.format(start)}${end ? ` to ${timeFormatter.format(end)}` : ""}`
+      );
+    }
+
+    if (event.location) {
+      lines.push(`   Location: ${event.location}`);
+    }
+
+    if (event.htmlLink) {
+      lines.push(`   Open: [Google Calendar](${event.htmlLink})`);
+    }
+
+    return lines.join("\n");
+  });
+
+  return `Here is your Google Calendar for ${label}:\n\n${formattedEvents.join("\n\n")}`;
 }
 
 function formatLiveCalendarDeleteConfirmation(
@@ -396,6 +504,7 @@ export async function POST(request: NextRequest) {
     const {
       messages,
       code,
+      attachments = [],
       language,
       user,
       topic = "general",
@@ -519,7 +628,9 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (looksLikeLiveCalendarDeleteRequest(latestUserMessage) || looksLikeLiveCalendarReadRequest(latestUserMessage)) {
+    const isReplyDraftRequest = looksLikeReplyDraftRequest(latestUserMessage);
+
+    if (!isReplyDraftRequest && (looksLikeLiveCalendarDeleteRequest(latestUserMessage) || looksLikeLiveCalendarReadRequest(latestUserMessage))) {
       const connection = await getStoredCalendarConnection();
       if (!connection) {
         return NextResponse.json({
@@ -529,7 +640,9 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const range = resolveCalendarDayRange(latestUserMessage, timeZone, new Date());
+      const range = resolveCalendarDayRange(latestUserMessage, timeZone, new Date(), {
+        defaultToToday: looksLikeLiveCalendarReadRequest(latestUserMessage) && !looksLikeLiveCalendarDeleteRequest(latestUserMessage),
+      });
       if (!range) {
         return NextResponse.json({
           success: true,
@@ -577,7 +690,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (looksLikeCalendarMemoryQuestion(latestUserMessage)) {
+    if (!isReplyDraftRequest && looksLikeCalendarMemoryQuestion(latestUserMessage)) {
       const rememberedEvents = await listRememberedCalendarEvents(8);
 
       return NextResponse.json({
@@ -666,7 +779,7 @@ export async function POST(request: NextRequest) {
       previousAssistantAskedCalendarClarification(messages) &&
       looksLikeCalendarClarificationFollowUp(latestUserMessage);
 
-    if (looksLikeCalendarIntent(latestUserMessage) || isCalendarClarificationFollowUp) {
+    if ((!isReplyDraftRequest && looksLikeCalendarIntent(latestUserMessage)) || isCalendarClarificationFollowUp) {
       const connection = await getStoredCalendarConnection();
 
       if (!connection) {
@@ -716,7 +829,7 @@ export async function POST(request: NextRequest) {
         }
 
         const eventTitle =
-          typeof parsedIntent.event.title === "string" && parsedIntent.event.title.trim().length > 0
+          typeof parsedIntent.event.title === "string" && parsedIntent.event.title.trim().length > 0 && parsedIntent.event.title.trim().toLowerCase() !== "reminder"
             ? parsedIntent.event.title.trim()
             : fallbackCalendarTitleFromRequest(latestUserMessage);
 
@@ -752,14 +865,33 @@ export async function POST(request: NextRequest) {
 
     // Prepare for audio response
     let audioBase64 = null;
-    const [previousContext, longTermMemoryContext] = await Promise.all([
+    const [previousContext, longTermMemoryContext, relevantAssistantMemoryResult, relevantConversationResult] = await Promise.all([
       buildPersistentMemoryContext(),
       buildAssistantMemoryContext(),
+      buildRelevantAssistantMemoryContext(latestUserMessage),
+      buildRelevantConversationContext(latestUserMessage),
     ]);
+    const relevantAssistantMemoryContext = relevantAssistantMemoryResult.context;
+    const relevantConversationContext = relevantConversationResult.context;
+    const memorySources = [
+      relevantAssistantMemoryContext ? "remembered facts" : null,
+      relevantConversationContext ? "prior conversation" : null,
+    ].filter((entry): entry is string => Boolean(entry));
+    const memoryHit = memorySources.length > 0;
+    const memoryMatches: {
+      assistantMemories: RelevantAssistantMemoryMatch[];
+      conversationMatches: RelevantConversationMatch[];
+    } = {
+      assistantMemories: relevantAssistantMemoryResult.matches,
+      conversationMatches: relevantConversationResult.matches,
+    };
 
     // Pre-scan code for common elements to help AI
     let codeSummary = "";
     let formattedCode = "";
+    const attachmentContext = buildAttachmentPromptContext(
+      Array.isArray(attachments) ? (attachments as AttachmentContextItem[]) : []
+    );
     
     if (code) {
       formattedCode = formatCodeWithLineNumbers(code);
@@ -785,9 +917,9 @@ export async function POST(request: NextRequest) {
       userContext = `\nSTUDENT PROFILE:
 - Name: ${user.firstName} ${user.lastName || ""}
 - Email: ${user.email}
-- You're working with them as their personal coding mentor${previousContext}${longTermMemoryContext}`;
+- You're working with them as their personal coding mentor${previousContext}${longTermMemoryContext}${relevantAssistantMemoryContext}${relevantConversationContext}`;
     } else {
-      userContext = `${previousContext}${longTermMemoryContext}`;
+      userContext = `${previousContext}${longTermMemoryContext}${relevantAssistantMemoryContext}${relevantConversationContext}`;
     }
 
     const systemPrompt = `You are Loco, an intelligent, calm, and highly capable AI assistant — modelled after JARVIS — who helps users with everyday needs while also teaching programming, debugging code, and helping build software.
@@ -798,6 +930,8 @@ Always keep responses clear, concise, helpful, and encouraging.
 
 ${userGreeting}
 ${userContext}
+
+If the current message overlaps with remembered facts or relevant prior conversation context, naturally acknowledge that connection when it is genuinely useful. Keep it brief and accurate. Do not invent memory details.
 
 
 
@@ -1045,12 +1179,19 @@ A structured thinker with wild energy.
 Make coding feel **alive, understandable, and achievable.`;
 
 
+    const recentMessages = messages.slice(-10).map((msg: { role: string; content: string }, index: number, source: Array<{ role: string; content: string }>) => {
+      const isLatestUserMessage = index === source.length - 1 && msg.role === "user";
+      return {
+        role: msg.role as "user" | "assistant",
+        content: isLatestUserMessage && attachmentContext
+          ? `${msg.content}\n\n${attachmentContext}`
+          : msg.content,
+      };
+    });
+
     const apiMessages: Message[] = [
       { role: "system", content: systemPrompt },
-      ...messages.slice(-10).map((msg: { role: string; content: string }) => ({
-        role: msg.role as "user" | "assistant",
-        content: msg.content,
-      })),
+      ...recentMessages,
     ];
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -1183,6 +1324,9 @@ Make coding feel **alive, understandable, and achievable.`;
       success: true,
       message: aiMessage,
       audio: audioBase64,
+      memoryHit,
+      memorySources,
+      memoryMatches,
     });
   } catch (error) {
     console.error("Chat API error:", error);
