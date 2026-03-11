@@ -104,6 +104,170 @@ interface Message {
   content: string;
 }
 
+interface OpenAIChatOptions {
+  model?: string;
+  maxTokens?: number;
+  temperature?: number;
+  responseFormat?: { type: "json_object" };
+}
+
+interface PipelineReviewResult {
+  approved: boolean;
+  matchesUserRequest: boolean;
+  worksLikely: boolean;
+  updatedUserQuery: string;
+  reviewerNotes: string;
+  fixes: string[];
+}
+
+const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
+const OPENAI_DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+
+function normalizeModelOutput(content: unknown) {
+  if (typeof content === "string") {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") {
+          return part;
+        }
+
+        if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
+          return part.text;
+        }
+
+        return "";
+      })
+      .join("")
+      .trim();
+  }
+
+  return "";
+}
+
+async function callOpenAIChat(messages: Message[], options: OpenAIChatOptions = {}) {
+  const response = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: options.model || OPENAI_DEFAULT_MODEL,
+      messages,
+      max_tokens: options.maxTokens ?? 1000,
+      temperature: options.temperature ?? 0.7,
+      ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    console.error("OpenAI API error:", errorData);
+    throw new Error(errorData.error?.message || "Failed to get AI response");
+  }
+
+  const data = await response.json();
+  const content = normalizeModelOutput(data.choices?.[0]?.message?.content);
+
+  if (!content) {
+    throw new Error("No response from AI");
+  }
+
+  return content;
+}
+
+function parsePipelineReviewResult(content: string): PipelineReviewResult {
+  let parsed: Partial<PipelineReviewResult> = {};
+
+  try {
+    parsed = JSON.parse(content) as Partial<PipelineReviewResult>;
+  } catch (error) {
+    console.error("Failed to parse pipeline review result:", error, content);
+    return {
+      approved: false,
+      matchesUserRequest: false,
+      worksLikely: false,
+      updatedUserQuery: "Revise the answer so it fully satisfies the user request and fixes the identified issues.",
+      reviewerNotes: "The internal reviewer returned an invalid result. Regenerate the answer more clearly and completely.",
+      fixes: ["Return a complete answer.", "Ensure the response is specific to the user's request.", "Provide well-formed code blocks when code is needed."],
+    };
+  }
+
+  return {
+    approved: Boolean(parsed.approved),
+    matchesUserRequest: Boolean(parsed.matchesUserRequest),
+    worksLikely: Boolean(parsed.worksLikely),
+    updatedUserQuery: typeof parsed.updatedUserQuery === "string" && parsed.updatedUserQuery.trim().length > 0
+      ? parsed.updatedUserQuery.trim()
+      : "Revise the answer so it fully satisfies the user request and fixes the identified issues.",
+    reviewerNotes: typeof parsed.reviewerNotes === "string" && parsed.reviewerNotes.trim().length > 0
+      ? parsed.reviewerNotes.trim()
+      : "The answer needs revision.",
+    fixes: Array.isArray(parsed.fixes)
+      ? parsed.fixes.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      : [],
+  };
+}
+
+async function reviewLocoResponse(input: {
+  systemPrompt: string;
+  recentMessages: Message[];
+  latestUserMessage: string;
+  candidateResponse: string;
+  attachmentContext: string;
+  previewRuntimeIssueContext: string;
+  codeSummary: string;
+  formattedCode: string;
+  currentLanguage: string;
+}) {
+  const reviewPrompt = `You are Loco's internal QA reviewer. Review the draft response against the latest user request.
+
+Decide whether the response likely works and whether it actually satisfies what the user asked for.
+
+Rules:
+- Be strict.
+- If runtime feedback or sandbox error details are present, treat them as real failures.
+- If the answer asks for packages, setup steps, imports, or file placement that are missing, mark it as not likely to work.
+- If the response is incomplete, generic, or does not directly fulfill the request, mark it as not approved.
+- If the response is acceptable, keep updatedUserQuery focused and concise.
+- Return JSON only.
+
+Return this exact shape:
+{
+  "approved": boolean,
+  "matchesUserRequest": boolean,
+  "worksLikely": boolean,
+  "updatedUserQuery": string,
+  "reviewerNotes": string,
+  "fixes": string[]
+}`;
+
+  const reviewMessages: Message[] = [
+    { role: "system", content: reviewPrompt },
+    { role: "system", content: `PRIMARY LOCO SYSTEM PROMPT:\n${input.systemPrompt}` },
+    ...(input.attachmentContext ? [{ role: "system" as const, content: `ATTACHMENT CONTEXT:\n${input.attachmentContext}` }] : []),
+    ...(input.previewRuntimeIssueContext ? [{ role: "system" as const, content: input.previewRuntimeIssueContext }] : []),
+    ...(input.codeSummary ? [{ role: "system" as const, content: `CODE SUMMARY:\n${input.codeSummary}` }] : []),
+    ...(input.formattedCode ? [{ role: "system" as const, content: `CURRENT CODE WITH LINE NUMBERS:\n${input.formattedCode}` }] : []),
+    { role: "system", content: `CURRENT LANGUAGE: ${input.currentLanguage}` },
+    ...input.recentMessages,
+    { role: "system", content: `LATEST USER REQUEST:\n${input.latestUserMessage}` },
+    { role: "assistant", content: input.candidateResponse },
+  ];
+
+  const reviewResponse = await callOpenAIChat(reviewMessages, {
+    temperature: 0.1,
+    maxTokens: 500,
+    responseFormat: { type: "json_object" },
+  });
+
+  return parsePipelineReviewResult(reviewResponse);
+}
+
 function formatEventSuccessMessage(event: {
   title: string;
   startIso: Date;
@@ -505,6 +669,8 @@ export async function POST(request: NextRequest) {
       messages,
       code,
       attachments = [],
+      previewRuntimeIssue = null,
+      autoFixPreview = false,
       language,
       user,
       topic = "general",
@@ -520,8 +686,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const latestUserMessage = messages[messages.length - 1]?.content?.trim();
-    const latestRole = messages[messages.length - 1]?.role;
+    const latestMessage = messages[messages.length - 1];
+    let latestUserMessage = latestMessage?.content?.trim();
+    let latestRole = latestMessage?.role;
+
+    if (autoFixPreview && latestRole !== "user") {
+      latestUserMessage = getUserMessageBeforeLatestAssistant(messages) || latestUserMessage;
+      latestRole = latestUserMessage ? "user" : latestRole;
+    }
 
     if (!latestUserMessage || latestRole !== "user") {
       return NextResponse.json(
@@ -892,6 +1064,16 @@ export async function POST(request: NextRequest) {
     const attachmentContext = buildAttachmentPromptContext(
       Array.isArray(attachments) ? (attachments as AttachmentContextItem[]) : []
     );
+    const previewRuntimeIssueContext = previewRuntimeIssue
+      && typeof previewRuntimeIssue === "object"
+      && typeof previewRuntimeIssue.message === "string"
+      && previewRuntimeIssue.message.trim().length > 0
+        ? `The user's last generated live preview failed in the sandbox. Treat this as concrete runtime feedback for the current request.
+
+PREVIEW ERROR SOURCE: ${typeof previewRuntimeIssue.source === "string" && previewRuntimeIssue.source ? previewRuntimeIssue.source : "runtime"}
+PREVIEW ERROR MESSAGE:
+${previewRuntimeIssue.message.trim()}`
+        : "";
     
     if (code) {
       formattedCode = formatCodeWithLineNumbers(code);
@@ -913,7 +1095,7 @@ export async function POST(request: NextRequest) {
     let userContext = "";
     
     if (user && user.firstName) {
-      userGreeting = ` Hey there, ${user.firstName}! `;
+      userGreeting = ` Greetings, sir. `;
       userContext = `\nSTUDENT PROFILE:
 - Name: ${user.firstName} ${user.lastName || ""}
 - Email: ${user.email}
@@ -955,6 +1137,8 @@ Your tone is:
 **80% composed, analytical advisor**
 **20% dry wit and understated confidence**
 
+Address the user as "sir" when speaking directly, unless they explicitly ask you to use a different form of address.
+
 You speak in short, deliberate sentences. Never long paragraphs when brevity will do.
 
 You think in distinct ideas - one thought at a time.
@@ -974,7 +1158,7 @@ When responding:
 - Avoid filler words. Be direct and precise.
 - Narrate complex work: "Running diagnostics.", "Cross-referencing the documentation."
 - Deliver conclusions calmly: "That confirms the issue.", "The fix is straightforward."
-- Acknowledge the user with quiet confidence: "Understood.", "Noted.", "Good question."
+- Acknowledge the user with quiet confidence: "Understood, sir.", "Noted, sir.", "Good question, sir."
 
 ---
 
@@ -1191,40 +1375,67 @@ Make coding feel **alive, understandable, and achievable.`;
 
     const apiMessages: Message[] = [
       { role: "system", content: systemPrompt },
+      ...(previewRuntimeIssueContext ? [{ role: "system" as const, content: previewRuntimeIssueContext }] : []),
       ...recentMessages,
     ];
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: apiMessages,
-        max_tokens: 1000,
-        temperature: 0.7,
-      }),
+    let aiMessage = await callOpenAIChat(apiMessages, {
+      temperature: 0.7,
+      maxTokens: 1000,
     });
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      console.error("OpenAI API error:", errorData);
-      return NextResponse.json(
-        { error: errorData.error?.message || "Failed to get AI response" },
-        { status: response.status }
-      );
-    }
+    let pipelineReview = await reviewLocoResponse({
+      systemPrompt,
+      recentMessages: apiMessages.filter((message) => message.role !== "system"),
+      latestUserMessage,
+      candidateResponse: aiMessage,
+      attachmentContext,
+      previewRuntimeIssueContext,
+      codeSummary,
+      formattedCode,
+      currentLanguage,
+    });
 
-    const data = await response.json();
-    let aiMessage = data.choices?.[0]?.message?.content;
+    if (!pipelineReview.approved || !pipelineReview.matchesUserRequest || !pipelineReview.worksLikely) {
+      const revisionInstruction = `You are revising your previous answer after an internal quality review.
 
-    if (!aiMessage) {
-      return NextResponse.json(
-        { error: "No response from AI" },
-        { status: 500 }
-      );
+Original user request:
+${latestUserMessage}
+
+Updated user query:
+${pipelineReview.updatedUserQuery}
+
+Review notes:
+${pipelineReview.reviewerNotes}
+
+Required fixes:
+${pipelineReview.fixes.length > 0 ? pipelineReview.fixes.map((fix, index) => `${index + 1}. ${fix}`).join("\n") : "1. Make the answer directly satisfy the request.\n2. Ensure the proposed code is likely to work."}
+
+Instructions:
+- Return the improved final answer only.
+- Do not mention the internal review process.
+- If code is needed, provide the corrected complete code.
+- If the runtime error indicates the previous approach failed, replace it with a working one.`;
+
+      aiMessage = await callOpenAIChat([
+        ...apiMessages,
+        { role: "assistant", content: aiMessage },
+        { role: "system", content: revisionInstruction },
+      ], {
+        temperature: 0.35,
+        maxTokens: 1200,
+      });
+
+      pipelineReview = await reviewLocoResponse({
+        systemPrompt,
+        recentMessages: apiMessages.filter((message) => message.role !== "system"),
+        latestUserMessage,
+        candidateResponse: aiMessage,
+        attachmentContext,
+        previewRuntimeIssueContext,
+        codeSummary,
+        formattedCode,
+        currentLanguage,
+      });
     }
 
     // If audio is requested, call TTS API based on provider
@@ -1327,6 +1538,14 @@ Make coding feel **alive, understandable, and achievable.`;
       memoryHit,
       memorySources,
       memoryMatches,
+      pipeline: {
+        approved: pipelineReview.approved,
+        matchesUserRequest: pipelineReview.matchesUserRequest,
+        worksLikely: pipelineReview.worksLikely,
+        updatedUserQuery: pipelineReview.updatedUserQuery,
+        reviewerNotes: pipelineReview.reviewerNotes,
+        fixes: pipelineReview.fixes,
+      },
     });
   } catch (error) {
     console.error("Chat API error:", error);

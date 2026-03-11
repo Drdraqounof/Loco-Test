@@ -16,6 +16,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 import { useElectron } from "@/tools/hooks/useElectron";
+import {
+  parseStoredSoundCloudPlaylistAliases,
+  SOUNDCLOUD_PLAYLIST_STORAGE_KEY,
+  type SoundCloudPlaylistAlias,
+} from "@/lib/soundcloud";
 
 type TtsProvider = "browser" | "server" | "piper";
 
@@ -37,6 +42,10 @@ interface PiperStatus {
   reason?: string | null;
   executable?: string;
   model?: string;
+}
+
+interface SoundCloudStatus {
+  configured: boolean;
 }
 
 interface TabButtonProps {
@@ -139,6 +148,11 @@ export default function SettingsPage() {
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [calendarMessage, setCalendarMessage] = useState<string | null>(null);
   const [piperStatus, setPiperStatus] = useState<PiperStatus | null>(null);
+  const [soundCloudStatus, setSoundCloudStatus] = useState<SoundCloudStatus>({ configured: false });
+  const [soundCloudAliases, setSoundCloudAliases] = useState<SoundCloudPlaylistAlias[]>([]);
+  const [soundCloudAliasName, setSoundCloudAliasName] = useState("");
+  const [soundCloudAliasUrl, setSoundCloudAliasUrl] = useState("");
+  const [soundCloudMessage, setSoundCloudMessage] = useState<string | null>(null);
   const [browserVoiceStatus, setBrowserVoiceStatus] = useState<BrowserVoiceStatus>({
     selectedVoiceName: null,
     exactMatchAvailable: false,
@@ -159,6 +173,17 @@ export default function SettingsPage() {
     }
   };
 
+  const loadSoundCloudStatus = async () => {
+    try {
+      const response = await fetch("/api/soundcloud", { cache: "no-store" });
+      const data = await response.json();
+      setSoundCloudStatus({ configured: Boolean(data?.configured) });
+    } catch (error) {
+      console.error("Failed to load SoundCloud status:", error);
+      setSoundCloudStatus({ configured: false });
+    }
+  };
+
   useEffect(() => {
     const savedVoice = (localStorage.getItem("selectedVoice") as VoiceKey) || "echo";
     const savedTtsProvider = localStorage.getItem("selectedTtsProvider");
@@ -173,7 +198,11 @@ export default function SettingsPage() {
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
+    setSoundCloudAliases(
+      parseStoredSoundCloudPlaylistAliases(localStorage.getItem(SOUNDCLOUD_PLAYLIST_STORAGE_KEY))
+    );
     void loadCalendarStatus();
+    void loadSoundCloudStatus();
   }, []);
 
   useEffect(() => {
@@ -287,6 +316,45 @@ export default function SettingsPage() {
       setCalendarMessage("Could not disconnect Google Calendar.");
       setCalendarLoading(false);
     }
+  };
+
+  const saveSoundCloudAliases = (nextAliases: SoundCloudPlaylistAlias[]) => {
+    setSoundCloudAliases(nextAliases);
+    localStorage.setItem(SOUNDCLOUD_PLAYLIST_STORAGE_KEY, JSON.stringify(nextAliases));
+  };
+
+  const handleAddSoundCloudAlias = () => {
+    const trimmedName = soundCloudAliasName.trim();
+    const trimmedUrl = soundCloudAliasUrl.trim();
+
+    if (!trimmedName || !trimmedUrl) {
+      setSoundCloudMessage("Enter both a playlist name and a SoundCloud playlist URL.");
+      return;
+    }
+
+    if (!/^https?:\/\//i.test(trimmedUrl) || !/soundcloud\.com/i.test(trimmedUrl)) {
+      setSoundCloudMessage("Use a valid public SoundCloud playlist URL.");
+      return;
+    }
+
+    const nextAliases = [
+      ...soundCloudAliases.filter((alias) => alias.name.toLowerCase() !== trimmedName.toLowerCase()),
+      {
+        id: `${trimmedName.toLowerCase().replace(/\s+/g, "-")}-${Date.now()}`,
+        name: trimmedName,
+        url: trimmedUrl,
+      },
+    ];
+
+    saveSoundCloudAliases(nextAliases);
+    setSoundCloudAliasName("");
+    setSoundCloudAliasUrl("");
+    setSoundCloudMessage(`Saved "${trimmedName}". You can now say: play my ${trimmedName} playlist.`);
+  };
+
+  const handleDeleteSoundCloudAlias = (aliasId: string) => {
+    const nextAliases = soundCloudAliases.filter((alias) => alias.id !== aliasId);
+    saveSoundCloudAliases(nextAliases);
   };
 
   const voiceDescriptions: Record<VoiceKey, string> = {
@@ -608,6 +676,113 @@ export default function SettingsPage() {
                           <div className="font-semibold text-foreground">Environment</div>
                           <p className="mt-1">{calendarStatus.configured ? "OAuth variables detected in your environment." : "Google OAuth environment variables are still missing or invalid."}</p>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(320px,0.85fr)]">
+                  <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="inline-flex items-center gap-2 rounded-full border border-border/60 bg-card/80 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                          <Link2 className="h-3.5 w-3.5" />
+                          SoundCloud
+                        </div>
+                        <h3 className="mt-4 text-xl font-semibold">Voice and text music shortcuts</h3>
+                        <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
+                          First version only, sir. Track searches use the SoundCloud API, and personal playlist phrases like “play my boss playlist” are mapped through saved alias URLs below.
+                        </p>
+                      </div>
+                      <div
+                        className="flex h-12 w-12 items-center justify-center rounded-2xl border border-primary/25 bg-primary/10 text-primary"
+                        style={{ boxShadow: `0 0 40px ${theme.accentColor}22` }}
+                      >
+                        <Mic2 className="h-6 w-6" />
+                      </div>
+                    </div>
+
+                    <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">API</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">{soundCloudStatus.configured ? "Ready" : "Missing"}</div>
+                      </div>
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Playlist aliases</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">{soundCloudAliases.length}</div>
+                      </div>
+                      <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Supported commands</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">Play playlists and songs</div>
+                      </div>
+                    </div>
+
+                    {soundCloudMessage && (
+                      <div className="mt-5 rounded-2xl border border-primary/20 bg-primary/10 px-4 py-3 text-sm leading-6 text-foreground">
+                        {soundCloudMessage}
+                      </div>
+                    )}
+
+                    <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]">
+                      <input
+                        value={soundCloudAliasName}
+                        onChange={(event) => setSoundCloudAliasName(event.target.value)}
+                        placeholder="boss"
+                        className="rounded-2xl border border-border/70 bg-card/70 px-4 py-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
+                      />
+                      <input
+                        value={soundCloudAliasUrl}
+                        onChange={(event) => setSoundCloudAliasUrl(event.target.value)}
+                        placeholder="https://soundcloud.com/.../sets/..."
+                        className="rounded-2xl border border-border/70 bg-card/70 px-4 py-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/50"
+                      />
+                      <Button onClick={handleAddSoundCloudAlias} className="rounded-2xl px-5">Save alias</Button>
+                    </div>
+
+                    <div className="mt-4 text-xs leading-5 text-muted-foreground">
+                      Example: save alias <span className="font-semibold text-foreground">boss</span>, then say <span className="font-semibold text-foreground">play my boss playlist</span>.
+                    </div>
+                  </div>
+
+                  <div className="space-y-5">
+                    <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Command examples</div>
+                      <div className="mt-4 space-y-4 text-sm leading-6 text-muted-foreground">
+                        <div>
+                          <div className="font-semibold text-foreground">Playlist alias</div>
+                          <p>“Play my boss playlist.”</p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">Newest release</div>
+                          <p>“Play the newest Bad Bunny song.”</p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">SoundCloud search</div>
+                          <p>“Play After Hours on SoundCloud.”</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Saved playlist aliases</div>
+                      <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+                        {soundCloudAliases.length === 0 ? (
+                          <p>No aliases saved yet.</p>
+                        ) : (
+                          soundCloudAliases.map((alias) => (
+                            <div key={alias.id} className="rounded-2xl border border-border/60 bg-card/70 px-4 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="font-semibold text-foreground">{alias.name}</div>
+                                  <p className="mt-1 break-all text-xs leading-5 text-muted-foreground">{alias.url}</p>
+                                </div>
+                                <Button variant="ghost" size="sm" onClick={() => handleDeleteSoundCloudAlias(alias.id)}>
+                                  Remove
+                                </Button>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
                   </div>

@@ -18,6 +18,14 @@ import { parseResponse } from "@/tools/hooks/utils/messageParser";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
 import { callAIAPI } from "@/tools/hooks/utils/apiClient";
 import { formatBytes, type AttachmentContextItem } from "@/lib/attachmentContext";
+import {
+  buildSoundCloudEmbedUrl,
+  normalizeSoundCloudAliasName,
+  parseSoundCloudPlaybackIntent,
+  parseStoredSoundCloudPlaylistAliases,
+  SOUNDCLOUD_PLAYLIST_STORAGE_KEY,
+  type SoundCloudPlaylistAlias,
+} from "@/lib/soundcloud";
 
 
 // ── Types ──
@@ -78,6 +86,26 @@ interface LastAudioClip {
   text: string;
   base64Audio?: string;
   mimeType?: string;
+}
+
+interface SoundCloudPlayerState {
+  title: string;
+  subtitle: string;
+  sourceUrl: string;
+  embedUrl: string;
+}
+
+interface PreviewRuntimeIssue {
+  message: string;
+  source: string;
+  capturedAt: string;
+}
+
+interface PreviewBridgeMessage {
+  source: "loco-preview";
+  type: "loco-preview-ready" | "loco-preview-error";
+  message?: string;
+  errorSource?: string;
 }
 
 // ── Data ──
@@ -171,6 +199,33 @@ function isLikelyReactPreviewBlock(block: CodeBlock) {
   return (hasReactImport || hasClientComponentHint || hasHookUsage) && hasUppercaseComponent && hasJsxMarkup;
 }
 
+function isLikelyExecutableJavaScriptBlock(block: CodeBlock) {
+  const normalizedLanguage = normalizeCodeLanguage(block.language);
+
+  if (!["javascript", "js"].includes(normalizedLanguage)) {
+    return false;
+  }
+
+  const source = block.code.trim();
+
+  if (!source) {
+    return false;
+  }
+
+  // Reject file trees and path listings that are often mislabeled as JavaScript.
+  if (/^[\w.-]+\/$/m.test(source) || /[├└│]──/.test(source)) {
+    return false;
+  }
+
+  const executablePatterns = [
+    /\b(const|let|var|function|class|import|export|if|for|while|document\.|window\.|new\s+[A-Z]|requestAnimationFrame|addEventListener)\b/,
+    /=>/,
+    /[{}();]/,
+  ];
+
+  return executablePatterns.some((pattern) => pattern.test(source));
+}
+
 function escapeEmbeddedScript(code: string) {
   return code.replace(/<\/script/gi, "<\\/script");
 }
@@ -243,6 +298,52 @@ function extractReactPreviewSource(source: string) {
   };
 }
 
+function buildPreviewBridgeScript(options?: { reportReadyOnLoad?: boolean }) {
+  const reportReadyOnLoad = options?.reportReadyOnLoad ?? false;
+
+  return `<script>
+      (() => {
+        const send = (type, payload = {}) => {
+          try {
+            window.parent?.postMessage({ source: "loco-preview", type, ...payload }, "*");
+          } catch {}
+        };
+
+        const normalize = (value) => {
+          if (!value) {
+            return "Unknown preview error";
+          }
+
+          if (typeof value === "string") {
+            return value;
+          }
+
+          return String(value.stack || value.message || value.reason || value);
+        };
+
+        window.__locoPreviewSendReady = () => send("loco-preview-ready");
+        window.__locoPreviewReportError = (error, errorSource = "runtime") => {
+          send("loco-preview-error", {
+            message: normalize(error),
+            errorSource,
+          });
+        };
+
+        window.addEventListener("error", (event) => {
+          event.preventDefault?.();
+          window.__locoPreviewReportError(event.error || event.message, "runtime");
+        });
+
+        window.addEventListener("unhandledrejection", (event) => {
+          event.preventDefault?.();
+          window.__locoPreviewReportError(event.reason, "promise");
+        });
+
+        ${reportReadyOnLoad ? 'window.addEventListener("load", () => { window.setTimeout(() => window.__locoPreviewSendReady(), 0); });' : ""}
+      })();
+    <\/script>`;
+}
+
 function buildReactPreviewDocument(codeBlocks: CodeBlock[], css: string) {
   const reactBlocks = codeBlocks.filter((block) => isLikelyReactPreviewBlock(block));
 
@@ -258,6 +359,7 @@ function buildReactPreviewDocument(codeBlocks: CodeBlock[], css: string) {
   }
 
   const safeCode = escapeEmbeddedScript(prepared.source);
+  const previewBridgeScript = buildPreviewBridgeScript();
 
   return `<!DOCTYPE html>
 <html>
@@ -291,6 +393,7 @@ function buildReactPreviewDocument(codeBlocks: CodeBlock[], css: string) {
   <body>
     <div id="root"></div>
     <pre id="preview-error"></pre>
+    ${previewBridgeScript}
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -305,6 +408,7 @@ function buildReactPreviewDocument(codeBlocks: CodeBlock[], css: string) {
           panel.style.display = "block";
           panel.textContent = String(error?.stack || error?.message || error);
         }
+        window.__locoPreviewReportError?.(error, "react-runtime");
       };
 
       window.addEventListener("error", (event) => {
@@ -454,12 +558,10 @@ function buildPreviewDocument(codeBlocks: CodeBlock[]) {
     return language === "html" || language === "xml";
   });
   const cssBlocks = codeBlocks.filter((block) => normalizeCodeLanguage(block.language) === "css");
-  const jsBlocks = codeBlocks.filter((block) => {
-    const language = normalizeCodeLanguage(block.language);
-    return language === "javascript" || language === "js";
-  });
+  const jsBlocks = codeBlocks.filter(isLikelyExecutableJavaScriptBlock);
   const svgBlock = codeBlocks.find((block) => normalizeCodeLanguage(block.language) === "svg");
   const css = cssBlocks.map((block) => block.code).join("\n\n");
+  const previewBridgeScript = buildPreviewBridgeScript({ reportReadyOnLoad: true });
 
   if (svgBlock) {
     return `<!DOCTYPE html>
@@ -480,6 +582,7 @@ function buildPreviewDocument(codeBlocks: CodeBlock[]) {
     </style>
   </head>
   <body>
+    ${previewBridgeScript}
     ${svgBlock.code}
   </body>
 </html>`;
@@ -499,7 +602,7 @@ function buildPreviewDocument(codeBlocks: CodeBlock[]) {
 
   if (html) {
     const styleTag = css ? `<style>${css}</style>` : "";
-    const scriptTag = script ? `<script>${script}<\/script>` : "";
+    const scriptTag = `${previewBridgeScript}${script ? `<script>${script}<\/script>` : ""}`;
 
     if (/<html[\s>]/i.test(html)) {
       let document = html;
@@ -678,7 +781,12 @@ export default function Home() {
   const [attachments, setAttachments] = useState<AttachmentContextItem[]>([]);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [soundCloudAliases, setSoundCloudAliases] = useState<SoundCloudPlaylistAlias[]>([]);
+  const [soundCloudPlayer, setSoundCloudPlayer] = useState<SoundCloudPlayerState | null>(null);
+  const [previewRuntimeIssue, setPreviewRuntimeIssue] = useState<PreviewRuntimeIssue | null>(null);
+  const [autoFixingPreview, setAutoFixingPreview] = useState(false);
   const activeSessionIdRef = useRef<string | null>(null);
+  const autoFixPreviewSignaturesRef = useRef<Set<string>>(new Set());
 
   const updateActiveSessionId = (sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
@@ -866,6 +974,9 @@ export default function Home() {
       setMessages([]);
       syncTerminalFromMessages([]);
       setShowHistory(false);
+      setPreviewRuntimeIssue(null);
+      setAutoFixingPreview(false);
+      autoFixPreviewSignaturesRef.current.clear();
     } finally {
       setDeletingAllHistory(false);
     }
@@ -875,6 +986,9 @@ export default function Home() {
     setMessages([]);
     updateActiveSessionId(null);
     setShowTerminal(false); setExtractedCode(""); setCodeBlocks([]); setActiveCodeBlockIndex(0); setTerminalView("code"); setTerminalCommands([]);
+    setPreviewRuntimeIssue(null);
+    setAutoFixingPreview(false);
+    autoFixPreviewSignaturesRef.current.clear();
     setLastAudioClip(null);
     setAttachments([]);
     if (window.speechSynthesis) { window.speechSynthesis.cancel(); setIsSpeechPaused(false); }
@@ -957,6 +1071,78 @@ export default function Home() {
 
     playAudio(clip.base64Audio, clip.mimeType || "audio/mp3");
     return true;
+  };
+
+  const handleSoundCloudPlayback = async (text: string) => {
+    const intent = parseSoundCloudPlaybackIntent(text);
+
+    if (!intent) {
+      return null;
+    }
+
+    if (intent.kind === "playlist") {
+      const normalizedAlias = normalizeSoundCloudAliasName(intent.aliasName || "");
+      const matchingAlias = soundCloudAliases.find(
+        (alias) => normalizeSoundCloudAliasName(alias.name) === normalizedAlias
+      );
+
+      if (!matchingAlias) {
+        return {
+          handled: true,
+          assistantMessage: `I couldn't find a saved SoundCloud playlist called "${intent.aliasName}". Open Settings and add it first, sir.`,
+        };
+      }
+
+      setSoundCloudPlayer({
+        title: matchingAlias.name,
+        subtitle: "SoundCloud playlist",
+        sourceUrl: matchingAlias.url,
+        embedUrl: buildSoundCloudEmbedUrl(matchingAlias.url),
+      });
+
+      return {
+        handled: true,
+        assistantMessage: `Playing your ${matchingAlias.name} playlist on SoundCloud, sir.`,
+      };
+    }
+
+    const params = new URLSearchParams({
+      mode: "track",
+      query: intent.query || "",
+      newest: intent.newest ? "true" : "false",
+    });
+
+    try {
+      const response = await fetch(`/api/soundcloud?${params.toString()}`);
+      const data = await response.json();
+
+      if (!response.ok || !data?.track?.permalinkUrl) {
+        return {
+          handled: true,
+          assistantMessage: typeof data?.error === "string"
+            ? `${data.error} I could not start playback, sir.`
+            : "I couldn't start SoundCloud playback right now, sir.",
+        };
+      }
+
+      setSoundCloudPlayer({
+        title: data.track.title,
+        subtitle: data.track.artist ? `SoundCloud track • ${data.track.artist}` : "SoundCloud track",
+        sourceUrl: data.track.permalinkUrl,
+        embedUrl: buildSoundCloudEmbedUrl(data.track.permalinkUrl),
+      });
+
+      return {
+        handled: true,
+        assistantMessage: `Playing ${data.track.title}${data.track.artist ? ` by ${data.track.artist}` : ""} on SoundCloud, sir.`,
+      };
+    } catch (error) {
+      console.error("SoundCloud playback error:", error);
+      return {
+        handled: true,
+        assistantMessage: "I couldn't reach SoundCloud right now, sir.",
+      };
+    }
   };
 
   const toggleMemoryHit = (messageIndex: number) => {
@@ -1051,6 +1237,41 @@ export default function Home() {
     setSuggestedPrompts(getRandomPrompts(3));
   }, []);
 
+  useEffect(() => {
+    if (!showStartScreen) {
+      return;
+    }
+
+    setPhase("intro");
+    setEyePos({ x: 0, y: 0 });
+
+    const introTimer = window.setTimeout(() => {
+      setPhase("eyes");
+    }, 350);
+
+    let eyeIndex = 0;
+    const eyeInterval = window.setInterval(() => {
+      setEyePos(EYE_POSITIONS[eyeIndex % EYE_POSITIONS.length]);
+      eyeIndex += 1;
+    }, 280);
+
+    const fadeTimer = window.setTimeout(() => {
+      setPhase("fadeout");
+    }, 3350);
+
+    const hideTimer = window.setTimeout(() => {
+      setShowStartScreen(false);
+      localStorage.setItem("hasSeenStartScreen", "true");
+    }, 3850);
+
+    return () => {
+      window.clearTimeout(introTimer);
+      window.clearInterval(eyeInterval);
+      window.clearTimeout(fadeTimer);
+      window.clearTimeout(hideTimer);
+    };
+  }, [showStartScreen]);
+
   // ── Listen for voice commands to trigger TTS ──
   useEffect(() => {
     if (!speechSupported || !userMessage) return;
@@ -1100,6 +1321,25 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const syncSoundCloudAliases = () => {
+      setSoundCloudAliases(
+        parseStoredSoundCloudPlaylistAliases(localStorage.getItem(SOUNDCLOUD_PLAYLIST_STORAGE_KEY))
+      );
+    };
+
+    syncSoundCloudAliases();
+    window.addEventListener("storage", syncSoundCloudAliases);
+
+    return () => {
+      window.removeEventListener("storage", syncSoundCloudAliases);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!showAttachmentMenu) {
       return;
     }
@@ -1113,6 +1353,123 @@ export default function Home() {
     window.addEventListener("mousedown", handlePointerDown);
     return () => window.removeEventListener("mousedown", handlePointerDown);
   }, [showAttachmentMenu]);
+
+  useEffect(() => {
+    const handlePreviewMessage = (event: MessageEvent) => {
+      const data = event.data as PreviewBridgeMessage | null;
+
+      if (!data || data.source !== "loco-preview") {
+        return;
+      }
+
+      if (data.type === "loco-preview-ready") {
+        setPreviewRuntimeIssue(null);
+        return;
+      }
+
+      if (data.type === "loco-preview-error") {
+        const message = typeof data.message === "string" && data.message.trim().length > 0
+          ? data.message.trim()
+          : "Unknown preview error";
+
+        setPreviewRuntimeIssue({
+          message,
+          source: typeof data.errorSource === "string" && data.errorSource ? data.errorSource : "runtime",
+          capturedAt: new Date().toISOString(),
+        });
+      }
+    };
+
+    window.addEventListener("message", handlePreviewMessage);
+    return () => window.removeEventListener("message", handlePreviewMessage);
+  }, []);
+
+  const requestPreviewAutoFix = async (issue: PreviewRuntimeIssue, baseMessages: Message[]) => {
+    if (baseMessages.length === 0) {
+      return;
+    }
+
+    const currentSessionId = activeSessionIdRef.current;
+    setAutoFixingPreview(true);
+    setLoading(true);
+
+    try {
+      const session = await persistSession(baseMessages, currentSessionId);
+      const result = await callAIAPI(baseMessages, voice, session?.id ?? currentSessionId, [], issue, true);
+
+      if (!result.success || !result.data) {
+        const fallbackMessage = result.error
+          ? `I hit an error while auto-fixing that preview: ${result.error}`
+          : "I hit an error while auto-fixing that preview. Please try again.";
+        const nextMessages: Message[] = [...baseMessages, {
+          role: "assistant",
+          content: fallbackMessage,
+        }];
+        setMessages(nextMessages);
+        await persistSession(nextMessages, session?.id ?? currentSessionId);
+        return;
+      }
+
+      const message = result.data.message || "No response";
+      const parsed = parseResponse(message);
+      const previewDocument = buildPreviewDocument(parsed.codeBlocks);
+      const previewableCodeBlocks = parsed.codeBlocks.filter(isCodePreviewBlock);
+      const hasCode = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
+
+      setShowTerminal(hasCode);
+      setCodeBlocks(parsed.codeBlocks);
+      setActiveCodeBlockIndex(0);
+      setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+
+      if (previewableCodeBlocks.length > 0) {
+        setExtractedCode(previewableCodeBlocks[0].code);
+        setCodeLanguage(previewableCodeBlocks[0].language);
+      } else {
+        setExtractedCode("");
+        setCodeLanguage("javascript");
+      }
+
+      setTerminalCommands(parsed.commands);
+      const nextMessages: Message[] = [...baseMessages, {
+        role: "assistant",
+        content: message,
+        meta: {
+          memoryHit: result.data.memoryHit,
+          memorySources: result.data.memorySources,
+          memoryMatches: result.data.memoryMatches,
+        },
+      }];
+      setMessages(nextMessages);
+      await persistSession(nextMessages, session?.id ?? currentSessionId);
+    } catch (error) {
+      console.error("Preview auto-fix error:", error);
+    } finally {
+      setAutoFixingPreview(false);
+      setLoading(false);
+      inputRef.current?.focus();
+    }
+  };
+
+  useEffect(() => {
+    if (!previewRuntimeIssue || loading || autoFixingPreview) {
+      return;
+    }
+
+    const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+
+    if (!latestAssistant) {
+      return;
+    }
+
+    const signature = `${latestAssistant.content.slice(0, 200)}::${previewRuntimeIssue.message}`;
+
+    if (autoFixPreviewSignaturesRef.current.has(signature)) {
+      return;
+    }
+
+    autoFixPreviewSignaturesRef.current.add(signature);
+    void requestPreviewAutoFix(previewRuntimeIssue, messages);
+  }, [autoFixingPreview, loading, messages, previewRuntimeIssue, voice]);
 
   // ── Chat logic ──
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
@@ -1163,10 +1520,14 @@ export default function Home() {
   }, []);
 
   const handleSend = async () => {
-    if ((!input.trim() && attachments.length === 0) || loading) return;
+    if ((!input.trim() && attachments.length === 0 && !previewRuntimeIssue) || loading) return;
     setLoading(true);
     const pendingAttachments = attachments;
-    const outboundInput = input.trim() || "Analyze the attached files and tell me what matters.";
+    const pendingPreviewRuntimeIssue = previewRuntimeIssue;
+    const outboundInput = input.trim()
+      || (pendingPreviewRuntimeIssue
+        ? "The live preview failed. Fix the generated code using the captured runtime error."
+        : "Analyze the attached files and tell me what matters.");
     
     try {
       const updated: Message[] = [...messages, { role: "user", content: outboundInput }];
@@ -1186,11 +1547,30 @@ export default function Home() {
         return;
       }
 
+      const soundCloudResult = await handleSoundCloudPlayback(outboundInput);
+      if (soundCloudResult?.handled) {
+        const nextMessages: Message[] = [...updated, {
+          role: "assistant",
+          content: soundCloudResult.assistantMessage,
+        }];
+        setMessages(nextMessages);
+        await persistSession(nextMessages, currentSessionId);
+        return;
+      }
+
       const session = await persistSession(updated, currentSessionId);
-      const result = await callAIAPI(updated, voice, session?.id ?? currentSessionId, pendingAttachments);
+      const result = await callAIAPI(updated, voice, session?.id ?? currentSessionId, pendingAttachments, pendingPreviewRuntimeIssue);
       
       if (!result.success || !result.data) {
-        setLoading(false);
+        const fallbackMessage = result.error
+          ? `I hit an error while generating that response: ${result.error}`
+          : "I hit an error while generating that response. Please try again.";
+        const errorMessages: Message[] = [...updated, {
+          role: "assistant",
+          content: fallbackMessage,
+        }];
+        setMessages(errorMessages);
+        await persistSession(errorMessages, session?.id ?? currentSessionId);
         return;
       }
 
@@ -1274,6 +1654,9 @@ export default function Home() {
     setActiveCodeBlockIndex(0);
     setTerminalView("code");
     setTerminalCommands([]);
+    setPreviewRuntimeIssue(null);
+    setAutoFixingPreview(false);
+    autoFixPreviewSignaturesRef.current.clear();
     if (window.speechSynthesis) {
       window.speechSynthesis.cancel();
       setIsSpeechPaused(false);
@@ -1323,6 +1706,7 @@ export default function Home() {
 
   const previewableCodeBlocks = codeBlocks.filter(isCodePreviewBlock);
   const activeCodeBlock = previewableCodeBlocks[activeCodeBlockIndex] ?? null;
+  const canSend = Boolean(input.trim() || attachments.length > 0 || previewRuntimeIssue);
 
   const handleCopy = async () => {
     const codeToCopy = previewableCodeBlocks.length > 1
@@ -1392,6 +1776,12 @@ export default function Home() {
       setIsPreviewFullscreen(false);
     }
   }, [showTerminal, hasPreview]);
+
+  useEffect(() => {
+    if (!previewDocument) {
+      setPreviewRuntimeIssue(null);
+    }
+  }, [previewDocument]);
 
   // ── Loading state while checking localStorage ──
   if (!startScreenChecked) {
@@ -1563,6 +1953,37 @@ export default function Home() {
           )}
           <div className="flex-1" />
           <span className="opacity-60">Space: Record {window.speechSynthesis?.speaking && "• P: Pause"}</span>
+        </div>
+      )}
+
+      {soundCloudPlayer && (
+        <div className="border-b border-border/30 bg-card/20 px-6 py-3">
+          <div className="rounded-[24px] border border-border/60 bg-card/70 p-4 shadow-[0_18px_40px_rgba(2,6,23,0.18)] backdrop-blur-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">SoundCloud Now Playing</div>
+                <div className="mt-2 text-base font-semibold text-foreground">{soundCloudPlayer.title}</div>
+                <div className="mt-1 text-sm text-muted-foreground">{soundCloudPlayer.subtitle}</div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setSoundCloudPlayer(null)}
+                title="Close player"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+            <div className="mt-4 overflow-hidden rounded-2xl border border-border/60 bg-black/30">
+              <iframe
+                title="SoundCloud player"
+                src={soundCloudPlayer.embedUrl}
+                width="100%"
+                height="166"
+                allow="autoplay"
+              />
+            </div>
+          </div>
         </div>
       )}
 
@@ -1790,6 +2211,28 @@ export default function Home() {
               {...({ webkitdirectory: "", directory: "" } as any)}
             />
             <div className="max-w-3xl mx-auto space-y-3">
+              {previewRuntimeIssue && (
+                <div className="rounded-2xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-foreground">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-destructive">Preview error captured</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {autoFixingPreview ? "Loco is automatically trying to fix the preview now." : "Loco will auto-fix this preview, and you can still press send if you want to intervene manually."}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewRuntimeIssue(null)}
+                      className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  <pre className="mt-3 max-h-28 overflow-auto whitespace-pre-wrap rounded-xl bg-background/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-destructive">
+                    {previewRuntimeIssue.message}
+                  </pre>
+                </div>
+              )}
               {(attachments.length > 0 || attachmentBusy) && (
                 <div className="rounded-2xl border border-border/60 bg-background/40 px-3 py-3">
                   {attachments.length > 0 && (
@@ -1871,10 +2314,10 @@ export default function Home() {
                   onChange={(e) => { setInput(e.target.value); setUserMessage(e.target.value); }}
                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                   disabled={loading} 
-                  placeholder={attachments.length > 0 ? "Ask Loco to analyze what you attached..." : "Ask anything..."}
+                  placeholder={previewRuntimeIssue ? "Preview failed. Ask Loco to fix it, or press send." : attachments.length > 0 ? "Ask Loco to analyze what you attached..." : "Ask anything..."}
                   className="flex-1 px-4 py-3 rounded-xl bg-input/50 border border-border text-foreground placeholder:text-muted-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/40 transition-all disabled:opacity-50"
                 />
-                <Button onClick={handleSend} disabled={loading || (!input.trim() && attachments.length === 0)} variant="glow" className="px-5">
+                <Button onClick={handleSend} disabled={loading || !canSend} variant="glow" className="px-5">
                   {loading ? (
                     <div className="flex gap-1">
                       {[0, 1, 2].map((j) => <motion.span key={j} className="w-1.5 h-1.5 rounded-full bg-primary-foreground" animate={{ opacity: [1, 0.3, 1] }} transition={{ duration: 0.8, delay: j * 0.15, repeat: Infinity }} />)}
@@ -1963,6 +2406,22 @@ export default function Home() {
                         <Maximize2 className="w-3.5 h-3.5" /> Full Screen
                       </Button>
                     </div>
+                    {previewRuntimeIssue && (
+                      <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-destructive">Captured Preview Error</p>
+                            <p className="mt-1 text-xs text-muted-foreground">This error will be forwarded to Loco on your next request.</p>
+                          </div>
+                          <Button variant="surface" size="sm" className="h-7 px-3 text-xs" onClick={() => setPreviewRuntimeIssue(null)}>
+                            Clear
+                          </Button>
+                        </div>
+                        <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-background/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-destructive">
+                          {previewRuntimeIssue.message}
+                        </pre>
+                      </div>
+                    )}
                     <div className="flex flex-1 min-h-0 overflow-hidden rounded-xl border border-border bg-background shadow-sm">
                       <iframe
                         title="Generated code preview"

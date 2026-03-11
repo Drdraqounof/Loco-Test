@@ -1,5 +1,11 @@
 import type { AttachmentContextItem } from "@/lib/attachmentContext";
 
+interface PreviewRuntimeIssue {
+  message: string;
+  source: string;
+  capturedAt: string;
+}
+
 interface FetchOptions extends RequestInit {
   timeout?: number;
   retries?: number;
@@ -86,7 +92,9 @@ export async function callAIAPI(
   messages: Array<{ role: string; content: string }>,
   voice: string,
   sessionId?: string | null,
-  attachments: AttachmentContextItem[] = []
+  attachments: AttachmentContextItem[] = [],
+  previewRuntimeIssue?: PreviewRuntimeIssue | null,
+  autoFixPreview = false,
 ): Promise<FetchResponse<{
   message: string;
   audio?: string;
@@ -105,11 +113,13 @@ export async function callAIAPI(
       voice,
       sessionId,
       attachments,
+      previewRuntimeIssue,
+      autoFixPreview,
       language: "javascript",
       topic: "general",
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }),
-    timeout: 30000,
-    retries: 2,
+    timeout: 90000,
+    retries: 0,
   });
 }
