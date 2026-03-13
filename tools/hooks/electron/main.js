@@ -6,12 +6,30 @@ const { spawn } = require('child_process');
 // Tracks whether the Space hotkey is currently registered (overlay mode only)
 let spaceHotkeyRegistered = false;
 
+function showAndFocusMainWindow() {
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+
+  mainWindow.setAlwaysOnTop(true);
+  mainWindow.focus();
+  mainWindow.moveTop();
+  mainWindow.setAlwaysOnTop(false);
+}
+
 function registerSpaceHotkey() {
   if (spaceHotkeyRegistered) return;
   const ok = globalShortcut.register('Space', () => {
     if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
+      showAndFocusMainWindow();
       mainWindow.webContents.send('start-listening');
     }
   });
@@ -445,8 +463,7 @@ function registerGlobalHotkey() {
       if (mainWindow.isVisible()) {
         mainWindow.hide();
       } else {
-        mainWindow.show();
-        mainWindow.focus();
+        showAndFocusMainWindow();
       }
     }
   });
@@ -458,10 +475,7 @@ function registerGlobalHotkey() {
   // Ctrl+Space: show window and start listening (overlay mode spacebar)
   const retSpace = globalShortcut.register('Control+Space', () => {
     if (mainWindow) {
-      if (!mainWindow.isVisible()) {
-        mainWindow.show();
-      }
-      mainWindow.focus();
+      showAndFocusMainWindow();
       // Tell the renderer to start listening
       mainWindow.webContents.send('start-listening');
     }
@@ -565,8 +579,7 @@ ipcMain.handle('window:toggle', async () => {
     if (mainWindow.isVisible()) {
       mainWindow.hide();
     } else {
-      mainWindow.show();
-      mainWindow.focus();
+      showAndFocusMainWindow();
     }
   }
 });
