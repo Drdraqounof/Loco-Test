@@ -21,6 +21,7 @@ import {
   SOUNDCLOUD_PLAYLIST_STORAGE_KEY,
   type SoundCloudPlaylistAlias,
 } from "@/lib/soundcloud";
+import type { AssistantMode } from "@/tools/hooks/utils/apiClient";
 
 type TtsProvider = "browser" | "server" | "piper";
 
@@ -135,9 +136,11 @@ export default function SettingsPage() {
   const { isElectron, tts } = useElectron();
   const [voice, setVoice] = useState<VoiceKey>("echo");
   const [ttsProvider, setTtsProvider] = useState<TtsProvider>("browser");
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>("auto");
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
   const [enablePingPong, setEnablePingPong] = useState(true);
   const [enableChess, setEnableChess] = useState(true);
+  const [experimentalAiWorkflowEnabled, setExperimentalAiWorkflowEnabled] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"voice" | "integrations" | "experimental">("voice");
   const [theme] = useState(VOICE_THEMES["echo"]);
   const [calendarStatus, setCalendarStatus] = useState<CalendarStatus>({
@@ -187,17 +190,23 @@ export default function SettingsPage() {
   useEffect(() => {
     const savedVoice = (localStorage.getItem("selectedVoice") as VoiceKey) || "echo";
     const savedTtsProvider = localStorage.getItem("selectedTtsProvider");
+    const savedAssistantMode = localStorage.getItem("selectedAssistantMode");
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
+    const savedExperimentalAiWorkflow = localStorage.getItem("experimentalAiWorkflow") === "true";
 
     setVoice(savedVoice);
     if (savedTtsProvider === "browser" || savedTtsProvider === "server" || savedTtsProvider === "piper") {
       setTtsProvider(savedTtsProvider);
     }
+    if (savedAssistantMode === "auto" || savedAssistantMode === "loco" || savedAssistantMode === "claude") {
+      setAssistantMode(savedAssistantMode);
+    }
     setAutoPlayAudio(savedAutoPlay);
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
+    setExperimentalAiWorkflowEnabled(savedExperimentalAiWorkflow);
     setSoundCloudAliases(
       parseStoredSoundCloudPlaylistAliases(localStorage.getItem(SOUNDCLOUD_PLAYLIST_STORAGE_KEY))
     );
@@ -282,6 +291,11 @@ export default function SettingsPage() {
     localStorage.setItem("selectedTtsProvider", provider);
   };
 
+  const handleAssistantModeChange = (mode: AssistantMode) => {
+    setAssistantMode(mode);
+    localStorage.setItem("selectedAssistantMode", mode);
+  };
+
   const handleAutoPlayChange = (checked: boolean) => {
     setAutoPlayAudio(checked);
     localStorage.setItem("autoPlayAudio", checked.toString());
@@ -295,6 +309,11 @@ export default function SettingsPage() {
   const handleChessChange = (checked: boolean) => {
     setEnableChess(checked);
     localStorage.setItem("enableChess", checked.toString());
+  };
+
+  const handleExperimentalAiWorkflowChange = (checked: boolean) => {
+    setExperimentalAiWorkflowEnabled(checked);
+    localStorage.setItem("experimentalAiWorkflow", checked.toString());
   };
 
   const handleConnectCalendar = () => {
@@ -361,6 +380,11 @@ export default function SettingsPage() {
     alloy: "Balanced and clean for everyday coding help.",
     echo: "A sharper, more futuristic delivery for deeper sessions.",
     fable: "A warmer tone for conversational walkthroughs.",
+  };
+  const assistantModeLabels: Record<AssistantMode, string> = {
+    auto: "Auto",
+    claude: "Loco Code",
+    loco: "Loco",
   };
 
   return (
@@ -454,6 +478,67 @@ export default function SettingsPage() {
                       </button>
                     );
                   })}
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Assistant Routing</p>
+                    <h3 className="mt-2 text-lg font-semibold tracking-tight">Choose who handles code vs explanation</h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+                      Auto now runs a routing pass first: OpenAI classifies the user prompt, then code-heavy requests are sent through the code engine while explanation-first requests stay with Loco. The code engine needs an <span className="font-medium text-foreground">ANTHROPIC_API_KEY</span> on the server to be available in full.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    {([
+                      {
+                        id: "auto",
+                        title: "Auto",
+                        description: "Use OpenAI to classify the prompt first, then route code work to the code engine and explanation work to Loco.",
+                      },
+                      {
+                        id: "claude",
+                        title: "Loco Code",
+                        description: "Prefer the code engine for direct coding help, debugging, and implementation work.",
+                      },
+                      {
+                        id: "loco",
+                        title: "Loco",
+                        description: "Keep Loco in charge for explanation-first replies and teaching tone.",
+                      },
+                    ] as Array<{ id: AssistantMode; title: string; description: string }>).map((option) => {
+                      const selected = assistantMode === option.id;
+
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => handleAssistantModeChange(option.id)}
+                          className={`rounded-[24px] border px-5 py-5 text-left transition-all ${
+                            selected
+                              ? "border-primary/50 bg-primary/12 shadow-[0_0_40px_hsl(var(--primary)/0.15)]"
+                              : "border-border/70 bg-background/35 hover:border-primary/25 hover:bg-background/55"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-lg font-semibold text-foreground">{option.title}</span>
+                            {selected && <CheckCircle2 className="h-5 w-5 text-primary" />}
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-muted-foreground">{option.description}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="rounded-2xl border border-border/70 bg-background/35 px-5 py-4">
+                    <p className="text-sm font-semibold text-foreground">Current assistant routing</p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      Active mode: <span className="font-medium text-foreground">{assistantModeLabels[assistantMode]}</span>
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      Auto mode now uses a routing pipeline: OpenAI analyzes the latest prompt and available code context first, then the code engine receives implementation work while Loco keeps conceptual explanation requests.
+                    </p>
+                  </div>
                 </div>
 
                 <div className="space-y-4">
@@ -801,6 +886,12 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="space-y-4">
+                  <ToggleCard
+                    title="Enable enhanced AI workflow"
+                    description="Adds task classification, implementation brief rewriting, and richer review diagnostics before Loco returns code-oriented answers."
+                    checked={experimentalAiWorkflowEnabled}
+                    onChange={handleExperimentalAiWorkflowChange}
+                  />
                   <ToggleCard
                     title="Auto-play TTS responses"
                     description="Automatically speak Loco responses after each assistant reply."

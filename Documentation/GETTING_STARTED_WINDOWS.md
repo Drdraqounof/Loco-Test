@@ -22,9 +22,11 @@ This is a step-by-step guide for Windows users. If you're on Mac/Linux, see the 
    docker compose --version
    ```
 
-### 2. Configure OpenAI API Key
+### 2. Configure API Keys
 
-Get your API key from: https://platform.openai.com/account/api-keys
+OpenAI key: https://platform.openai.com/account/api-keys
+
+Optional Anthropic key for Claude code routing: https://console.anthropic.com/
 
 ---
 
@@ -54,10 +56,11 @@ Open the file in Notepad:
 notepad .env.production
 ```
 
-Add your OpenAI API key. The file should look like:
+Add your OpenAI API key. If you want Claude to handle code-heavy requests, add your Anthropic key too. The file can look like:
 
 ```env
 OPENAI_API_KEY=sk-your-actual-key-here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 POSTGRES_USER=loco_user
 POSTGRES_PASSWORD=loco_password
 POSTGRES_DB=loco_db

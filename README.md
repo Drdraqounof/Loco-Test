@@ -21,7 +21,8 @@ Think of Loco as having an expert coding mentor who:
 ### In Technical Terms
 Loco is a **Next.js-based, voice-enabled AI chatbot** that:
 - Uses **Web Speech API** in the browser and **MediaRecorder + server transcription** in Electron
-- Integrates **OpenAI's GPT-4o-mini** for intelligent conversation and code generation
+- Integrates **OpenAI's GPT-4o-mini** for Loco's explanation-first replies and fallback chat handling
+- Can route code-heavy requests to **Anthropic Claude** when `ANTHROPIC_API_KEY` is configured
 - Integrates **Google OAuth and Google Calendar API** for confirmed event creation
 - Falls back across **multiple STT providers/models** when a transcription model is unavailable
 - Extracts code blocks from AI responses using regex pattern matching
@@ -38,7 +39,8 @@ Loco is a **Next.js-based, voice-enabled AI chatbot** that:
 - OR manually:
   - Node.js 18 or higher
   - PostgreSQL 15 (for database)
-  - OpenAI API key (required for chat, get one at [platform.openai.com](https://platform.openai.com))
+  - OpenAI API key (recommended for Loco chat, TTS, and calendar parsing, get one at [platform.openai.com](https://platform.openai.com))
+  - Anthropic API key (optional, enables Claude for code-heavy requests, get one at [console.anthropic.com](https://console.anthropic.com/))
   - Gemini API key (optional, used as Electron STT fallback if OpenAI transcription access is unavailable)
   - Google OAuth client credentials (optional, required for Google Calendar support)
   - A modern web browser
@@ -53,6 +55,7 @@ cd my-app
 # Create production environment file
 cp .env.production.example .env.production
 # Edit .env.production and add your OPENAI_API_KEY
+# Optional: add ANTHROPIC_API_KEY to route code-heavy requests to Claude
 
 # Start everything with one command
 docker compose up -d
@@ -86,6 +89,7 @@ npm install
 # Create environment file
 cp .env.example .env
 # Edit .env and add your OPENAI_API_KEY
+# Optional: add ANTHROPIC_API_KEY for Claude code routing
 # Optional: add GEMINI_API_KEY and Google OAuth values for Calendar support
 
 # Development (hot reload)

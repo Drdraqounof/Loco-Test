@@ -1,6 +1,32 @@
 # Troubleshooting Guide
 
-> **Last Updated:** March 9, 2026 at 1:14 PM
+> **Last Updated:** March 15, 2026 at 03:37 PM EDT
+
+## Build Issues
+
+### `app/api/route.ts` "is not a module" During `next build`
+
+**Problem**: `next build` fails during the TypeScript phase with an error similar to:
+
+```text
+.next/dev/types/validator.ts:152:39
+Type error: File '.../app/api/route.ts' is not a module.
+```
+
+**Cause**:
+1. This can be caused by TypeScript reading dev-generated Next validator files from `.next/dev/types`
+2. Those files are build artifacts and can become stale or inconsistent with the current source tree
+3. The error points at `app/api/route.ts`, but the failing file is usually the generated validator rather than the route implementation itself
+
+**Solutions**:
+1. Remove `.next/dev/types/**/*.ts` from `tsconfig.json` include entries
+2. Keep `.next/types/**/*.ts` so normal Next generated types are still available
+3. Delete the `.next` folder
+4. Run `npm run build` again
+
+**Notes**:
+1. This issue is unrelated to `prisma generate` if Prisma completes successfully before the build step
+2. If the route file already exports a handler such as `POST`, treat the validator error as potentially misleading until `.next` artifacts are cleared
 
 ## Speech Recognition Issues
 

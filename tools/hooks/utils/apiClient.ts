@@ -6,6 +6,16 @@ interface PreviewRuntimeIssue {
   capturedAt: string;
 }
 
+export type AssistantMode = "auto" | "loco" | "claude";
+export type ResolvedAssistantMode = "loco" | "claude";
+export type AssistantProvider = "openai" | "claude";
+export type RoutingAnalysisSource = "user-selected" | "openai-classifier" | "heuristic";
+export type WorkflowMode = "classic" | "enhanced";
+export type WorkflowTaskType = "coding" | "explanation" | "bug-fix" | "frontend-build" | "backend-api" | "database-schema" | "refactor" | "review";
+export type WorkflowFailureReason = "none" | "missing-context" | "logic-issue" | "stack-mismatch" | "incomplete-answer" | "hallucinated-dependency";
+export type WorkflowRouteCategory = "coding" | "data" | "conversation";
+export type WorkflowPreferredModel = "claude" | "chatgpt" | "gemini";
+
 interface FetchOptions extends RequestInit {
   timeout?: number;
   retries?: number;
@@ -95,6 +105,8 @@ export async function callAIAPI(
   attachments: AttachmentContextItem[] = [],
   previewRuntimeIssue?: PreviewRuntimeIssue | null,
   autoFixPreview = false,
+  assistantMode: AssistantMode = "auto",
+  experimentalAiWorkflow = false,
 ): Promise<FetchResponse<{
   message: string;
   audio?: string;
@@ -103,6 +115,37 @@ export async function callAIAPI(
   memoryMatches?: {
     assistantMemories?: Array<{ content: string; kind: string }>;
     conversationMatches?: Array<{ date: string; userText: string; assistantText: string }>;
+  };
+  routing?: {
+    requestedAssistantMode: AssistantMode;
+    resolvedAssistantMode: ResolvedAssistantMode;
+    provider: AssistantProvider;
+    fallbackReason?: string | null;
+    analysisSource: RoutingAnalysisSource;
+    rationale: string;
+    confidence: "low" | "medium" | "high";
+  };
+  workflow?: {
+    enabled: boolean;
+    mode: WorkflowMode;
+    taskType: WorkflowTaskType;
+    classificationSource: "heuristic" | "openai-classifier";
+    rationale: string;
+    confidence: "low" | "medium" | "high";
+    routeCategory: WorkflowRouteCategory;
+    preferredModel: WorkflowPreferredModel;
+    briefSource: "deterministic" | "model";
+    planSource: "deterministic" | "model";
+    planSummary: string;
+    planSteps: string[];
+    suggestedTools: string[];
+    executableTools: string[];
+    reviewAttemptCount: number;
+    missingContext: boolean;
+    failureReason: WorkflowFailureReason;
+    recommendedContext: string[];
+    reviewConfidence: number;
+    reviewConfidenceThreshold: number;
   };
 }>> {
   return fetchWithRetry("/api", {
@@ -115,6 +158,8 @@ export async function callAIAPI(
       attachments,
       previewRuntimeIssue,
       autoFixPreview,
+      assistantMode,
+      experimentalAiWorkflow,
       language: "javascript",
       topic: "general",
       timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,

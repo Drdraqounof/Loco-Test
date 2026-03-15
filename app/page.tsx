@@ -16,7 +16,17 @@ import {
 } from "@/tools/hooks/utils/attachmentHelpers";
 import { parseResponse } from "@/tools/hooks/utils/messageParser";
 import { VOICE_THEMES, VoiceKey } from "@/tools/hooks/utils/themes";
-import { callAIAPI } from "@/tools/hooks/utils/apiClient";
+import {
+  callAIAPI,
+  type AssistantMode,
+  type AssistantProvider,
+  type WorkflowFailureReason,
+  type WorkflowMode,
+  type WorkflowPreferredModel,
+  type WorkflowRouteCategory,
+  type WorkflowTaskType,
+  type ResolvedAssistantMode,
+} from "@/tools/hooks/utils/apiClient";
 import { formatBytes, type AttachmentContextItem } from "@/lib/attachmentContext";
 import {
   buildSoundCloudEmbedUrl,
@@ -34,6 +44,29 @@ interface Message {
   content: string;
   meta?: {
     memoryHit?: boolean;
+    routing?: {
+      requestedAssistantMode: AssistantMode;
+      resolvedAssistantMode: ResolvedAssistantMode;
+      provider: AssistantProvider;
+      fallbackReason?: string | null;
+    };
+    workflow?: {
+      enabled: boolean;
+      mode: WorkflowMode;
+      taskType: WorkflowTaskType;
+      routeCategory: WorkflowRouteCategory;
+      preferredModel: WorkflowPreferredModel;
+      planSummary: string;
+      planSteps: string[];
+      suggestedTools: string[];
+      executableTools: string[];
+      reviewAttemptCount: number;
+      missingContext: boolean;
+      failureReason: WorkflowFailureReason;
+      recommendedContext: string[];
+      reviewConfidence: number;
+      reviewConfidenceThreshold: number;
+    };
     memorySources?: string[];
     memoryMatches?: {
       assistantMemories?: Array<{
@@ -106,6 +139,15 @@ interface PreviewBridgeMessage {
   type: "loco-preview-ready" | "loco-preview-error";
   message?: string;
   errorSource?: string;
+}
+
+function getAssistantBadge(meta?: Message["meta"]) {
+  return {
+    avatarLabel: "L",
+    chipLabel: "Loco",
+    avatarClassName: "bg-primary/20 text-primary",
+    chipClassName: "border-primary/25 bg-primary/10 text-primary",
+  };
 }
 
 // ── Data ──
@@ -769,6 +811,8 @@ export default function Home() {
   const [lastAudioClip, setLastAudioClip] = useState<LastAudioClip | null>(null);
   const [autoPlayAudio, setAutoPlayAudio] = useState(false);
   const [ttsProvider, setTtsProvider] = useState<TtsProvider>("browser");
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>("auto");
+  const [experimentalAiWorkflowEnabled, setExperimentalAiWorkflowEnabled] = useState(false);
   const [isSpeechPaused, setIsSpeechPaused] = useState(false);
   const [enablePingPong, setEnablePingPong] = useState(true);
   const [enableChess, setEnableChess] = useState(true);
@@ -1300,16 +1344,22 @@ export default function Home() {
     const savedVoice = localStorage.getItem("selectedVoice") as VoiceKey || "echo";
     const savedAutoPlay = localStorage.getItem("autoPlayAudio") === "true";
     const savedTtsProvider = localStorage.getItem("selectedTtsProvider");
+    const savedAssistantMode = localStorage.getItem("selectedAssistantMode");
     const savedPingPong = localStorage.getItem("enablePingPong") !== "false";
     const savedChess = localStorage.getItem("enableChess") !== "false";
+    const savedExperimentalAiWorkflow = localStorage.getItem("experimentalAiWorkflow") === "true";
     
     setVoice(savedVoice);
     setAutoPlayAudio(savedAutoPlay);
     if (savedTtsProvider === "browser" || savedTtsProvider === "server" || savedTtsProvider === "piper") {
       setTtsProvider(savedTtsProvider);
     }
+    if (savedAssistantMode === "auto" || savedAssistantMode === "loco" || savedAssistantMode === "claude") {
+      setAssistantMode(savedAssistantMode);
+    }
     setEnablePingPong(savedPingPong);
     setEnableChess(savedChess);
+    setExperimentalAiWorkflowEnabled(savedExperimentalAiWorkflow);
     void loadSessionsFromServer().catch((error) => {
       console.error("Failed to load persisted chat sessions:", error);
     });
@@ -1395,7 +1445,16 @@ export default function Home() {
 
     try {
       const session = await persistSession(baseMessages, currentSessionId);
-      const result = await callAIAPI(baseMessages, voice, session?.id ?? currentSessionId, [], issue, true);
+      const result = await callAIAPI(
+        baseMessages,
+        voice,
+        session?.id ?? currentSessionId,
+        [],
+        issue,
+        true,
+        assistantMode,
+        experimentalAiWorkflowEnabled,
+      );
 
       if (!result.success || !result.data) {
         const fallbackMessage = result.error
@@ -1434,6 +1493,8 @@ export default function Home() {
         role: "assistant",
         content: message,
         meta: {
+          routing: result.data.routing,
+          workflow: result.data.workflow,
           memoryHit: result.data.memoryHit,
           memorySources: result.data.memorySources,
           memoryMatches: result.data.memoryMatches,
@@ -1469,7 +1530,7 @@ export default function Home() {
 
     autoFixPreviewSignaturesRef.current.add(signature);
     void requestPreviewAutoFix(previewRuntimeIssue, messages);
-  }, [autoFixingPreview, loading, messages, previewRuntimeIssue, voice]);
+  }, [assistantMode, autoFixingPreview, experimentalAiWorkflowEnabled, loading, messages, previewRuntimeIssue, voice]);
 
   // ── Chat logic ──
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
@@ -1559,7 +1620,16 @@ export default function Home() {
       }
 
       const session = await persistSession(updated, currentSessionId);
-      const result = await callAIAPI(updated, voice, session?.id ?? currentSessionId, pendingAttachments, pendingPreviewRuntimeIssue);
+      const result = await callAIAPI(
+        updated,
+        voice,
+        session?.id ?? currentSessionId,
+        pendingAttachments,
+        pendingPreviewRuntimeIssue,
+        false,
+        assistantMode,
+        experimentalAiWorkflowEnabled,
+      );
       
       if (!result.success || !result.data) {
         const fallbackMessage = result.error
@@ -1598,6 +1668,8 @@ export default function Home() {
         role: "assistant",
         content: message,
         meta: {
+          routing: result.data.routing,
+          workflow: result.data.workflow,
           memoryHit: result.data.memoryHit,
           memorySources: result.data.memorySources,
           memoryMatches: result.data.memoryMatches,
@@ -2092,17 +2164,38 @@ export default function Home() {
             ) : (
               <div className="max-w-3xl mx-auto space-y-4">
                 {messages.map((msg, i) => (
+                  (() => {
+                    const assistantBadge = getAssistantBadge(msg.meta);
+
+                    return (
                   <motion.div key={i} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}
                     className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                   >
                     {msg.role === "assistant" && (
-                      <div className="w-7 h-7 rounded-lg bg-primary/20 flex items-center justify-center flex-shrink-0 mt-1">
-                        <span className="text-primary text-xs font-bold">L</span>
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-1 ${assistantBadge.avatarClassName}`}>
+                        <span className="text-xs font-bold">{assistantBadge.avatarLabel}</span>
                       </div>
                     )}
                     <div className={`max-w-[75%] px-4 py-3 rounded-2xl text-sm leading-relaxed ${
                       msg.role === "user" ? "bg-primary text-primary-foreground rounded-br-sm" : "bg-card border border-border rounded-bl-sm text-card-foreground"
                     }`}>
+                      {msg.role === "assistant" && (
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] ${assistantBadge.chipClassName}`}>
+                            {assistantBadge.chipLabel}
+                          </span>
+                          {msg.meta?.routing?.requestedAssistantMode === "auto" && msg.meta?.routing?.resolvedAssistantMode ? (
+                            <span className="text-[11px] text-muted-foreground">
+                              Auto routed
+                            </span>
+                          ) : null}
+                          {msg.meta?.workflow?.enabled ? (
+                            <span className="text-[11px] text-muted-foreground">
+                              Enhanced workflow · {msg.meta.workflow.taskType} · {msg.meta.workflow.preferredModel}
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
                       {msg.role === "assistant" && msg.meta?.memoryHit && (
                         <div className="mb-2">
                           <button
@@ -2172,6 +2265,8 @@ export default function Home() {
                         : msg.content}
                     </div>
                   </motion.div>
+                    );
+                  })()
                 ))}
 
                 {loading && (

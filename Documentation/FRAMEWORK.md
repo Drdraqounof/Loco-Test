@@ -20,7 +20,7 @@
 ### 2.1 Core Features – Live
 | Feature | Status | Details |
 |---------|--------|---------|
-| **Chat Interface** | ✅ Live | Real-time conversation with gpt-4o-mini |
+| **Chat Interface** | ✅ Live | Real-time conversation with Loco or Claude routing based on request type |
 | **Voice Synthesis** | ✅ Live | Browser Web Speech API (free, zero-cost) |
 | **Voice Control** | ✅ Live | Auto-play toggle, pause/resume, undo buttons, replay |
 | **Code Extraction** | ✅ Live | Automated code block detection from AI responses |
@@ -46,7 +46,7 @@
 - `tools/hooks/electron/preload.js` – Secure IPC bridge for clipboard and overlay commands
 
 **Backend (Node.js/Next.js API):**
-- `app/api/route.ts` – OpenAI chat integration, memory handling, and Google Calendar intent routing
+- `app/api/route.ts` – Loco/Claude chat routing, memory handling, and Google Calendar intent routing
 - `Documentation/LOCO_CODE_PIPELINE.md` – Detailed generate-review-revise and preview feedback pipeline reference
 - `app/api/stt/route.ts` – Transcription endpoint with OpenAI model fallback + Gemini fallback
 - `app/api/chat-sessions/route.ts` – Persisted conversation session list/save API
@@ -59,6 +59,7 @@
 - TypeScript
 - Framer Motion + Lucide React for the updated UI
 - OpenAI API (gpt-4o-mini + optional STT/TTS)
+- Anthropic API (optional Claude code-specialist routing)
 - Gemini API (optional STT fallback)
 - Prisma + Neon PostgreSQL
 - Google Calendar API via `googleapis`
@@ -112,6 +113,8 @@
 ### 4.1 Environment Variables
 ```env
 OPENAI_API_KEY=<key>           # OpenAI gpt-4o-mini + tts-1
+ANTHROPIC_API_KEY=<key>        # Optional Claude routing for code-heavy requests
+CLAUDE_MODEL=<model>           # Optional Claude model override
 GEMINI_API_KEY=<key>           # Optional STT fallback for Electron
 OPENAI_STT_MODELS=<list>       # Optional comma-separated OpenAI STT model fallback order
 OPENAI_STT_MODEL=<model>       # Optional single OpenAI STT model override

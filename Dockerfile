@@ -3,6 +3,11 @@ FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
+# Prisma inspects the system SSL libraries when generating its engine bindings.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 # Copy package files and Prisma schema first so client generation works during install
 COPY package*.json ./
 COPY prisma ./prisma
@@ -14,7 +19,7 @@ RUN npm ci
 COPY . .
 
 # Build the Next.js app
-RUN npm run build
+RUN npx prisma generate && npm run build
 
 # Runtime stage
 FROM node:20-bookworm-slim
