@@ -29,13 +29,13 @@ import {
 } from "@/tools/hooks/utils/apiClient";
 import { formatBytes, type AttachmentContextItem } from "@/lib/attachmentContext";
 import {
-  buildSoundCloudEmbedUrl,
-  normalizeSoundCloudAliasName,
-  parseSoundCloudPlaybackIntent,
-  parseStoredSoundCloudPlaylistAliases,
-  SOUNDCLOUD_PLAYLIST_STORAGE_KEY,
-  type SoundCloudPlaylistAlias,
-} from "@/lib/soundcloud";
+  buildYouTubeEmbedUrl,
+  normalizeYouTubeAliasName,
+  parseStoredYouTubePlaylistAliases,
+  parseYouTubePlaybackIntent,
+  YOUTUBE_PLAYLIST_STORAGE_KEY,
+  type YouTubePlaylistAlias,
+} from "@/lib/youtube";
 
 
 // ── Types ──
@@ -121,11 +121,37 @@ interface LastAudioClip {
   mimeType?: string;
 }
 
-interface SoundCloudPlayerState {
+interface YouTubePlayerState {
   title: string;
   subtitle: string;
   sourceUrl: string;
   embedUrl: string;
+}
+
+interface YouTubeVideoChoice {
+  id: string;
+  title: string;
+  url: string;
+  channel: string;
+  publishedAt: string | null;
+  viewCount: number;
+}
+
+interface PendingYouTubeClarification {
+  requestQuery: string;
+  prompt: string;
+  options: Array<{
+    key: "ost" | "remix";
+    label: "OST" | "Remix";
+    video: YouTubeVideoChoice;
+  }>;
+}
+
+interface RecentYouTubeListen {
+  requestQuery: string;
+  video: YouTubeVideoChoice;
+  variantLabel?: string;
+  playedAt: string;
 }
 
 interface PreviewRuntimeIssue {
@@ -178,6 +204,54 @@ const EYE_POSITIONS = [
   { x: 0, y: -12 }, { x: 0, y: 0 }, { x: -15, y: -8 },
   { x: 15, y: -8 }, { x: 0, y: 0 },
 ];
+
+const YOUTUBE_RECENT_LISTENS_STORAGE_KEY = "youtubeRecentListens";
+
+function normalizeYouTubeMemoryKey(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseStoredRecentYouTubeListens(rawValue: string | null): RecentYouTubeListen[] {
+  if (!rawValue) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((entry): entry is RecentYouTubeListen => {
+      return Boolean(
+        entry &&
+        typeof entry.requestQuery === "string" &&
+        typeof entry.playedAt === "string" &&
+        entry.video &&
+        typeof entry.video.id === "string" &&
+        typeof entry.video.title === "string" &&
+        typeof entry.video.url === "string" &&
+        typeof entry.video.channel === "string"
+      );
+    });
+  } catch {
+    return [];
+  }
+}
+
+function isRecentReplayRequest(text: string) {
+  const normalizedText = text.trim();
+  return /^(?:hey\s+)?loco[,:\s-]*(?:play|put\s+on)?\s*(?:that|it|this|the\s+last\s+one|last\s+song|most\s+recent|recent\s+one)\s+again\b/i.test(normalizedText)
+    || /^(?:hey\s+)?loco[,:\s-]*play\s+again\b/i.test(normalizedText);
+}
+
+function isRecentListenQuestion(text: string) {
+  return /(?:what\s+did\s+i\s+(?:play|listen\s+to)\s+recently|most\s+recent\s+listen|recent\s+listens?)/i.test(text.trim());
+}
 
 function getRandomPrompts(count: number) {
   return [...ALL_PROMPTS].sort(() => Math.random() - 0.5).slice(0, count);
@@ -825,8 +899,10 @@ export default function Home() {
   const [attachments, setAttachments] = useState<AttachmentContextItem[]>([]);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
-  const [soundCloudAliases, setSoundCloudAliases] = useState<SoundCloudPlaylistAlias[]>([]);
-  const [soundCloudPlayer, setSoundCloudPlayer] = useState<SoundCloudPlayerState | null>(null);
+  const [youTubeAliases, setYouTubeAliases] = useState<YouTubePlaylistAlias[]>([]);
+  const [youTubePlayer, setYouTubePlayer] = useState<YouTubePlayerState | null>(null);
+  const [pendingYouTubeClarification, setPendingYouTubeClarification] = useState<PendingYouTubeClarification | null>(null);
+  const [recentYouTubeListens, setRecentYouTubeListens] = useState<RecentYouTubeListen[]>([]);
   const [previewRuntimeIssue, setPreviewRuntimeIssue] = useState<PreviewRuntimeIssue | null>(null);
   const [autoFixingPreview, setAutoFixingPreview] = useState(false);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -908,6 +984,38 @@ export default function Home() {
     upsertSessionState(data.session);
     updateActiveSessionId(data.session.id);
     return data.session;
+  };
+
+  const rememberRecentYouTubeListen = (requestQuery: string, video: YouTubeVideoChoice, variantLabel?: string) => {
+    const nextListen: RecentYouTubeListen = {
+      requestQuery,
+      video,
+      variantLabel,
+      playedAt: new Date().toISOString(),
+    };
+
+    setRecentYouTubeListens((currentListens) => {
+      const filteredListens = currentListens.filter((entry) => entry.video.id !== video.id);
+      const nextListens = [nextListen, ...filteredListens].slice(0, 12);
+      localStorage.setItem(YOUTUBE_RECENT_LISTENS_STORAGE_KEY, JSON.stringify(nextListens));
+      return nextListens;
+    });
+  };
+
+  const playResolvedYouTubeVideo = (requestQuery: string, video: YouTubeVideoChoice, variantLabel?: string) => {
+    setYouTubePlayer({
+      title: video.title,
+      subtitle: video.channel ? `YouTube video • ${video.channel}` : "YouTube video",
+      sourceUrl: video.url,
+      embedUrl: buildYouTubeEmbedUrl(video.id),
+    });
+    rememberRecentYouTubeListen(requestQuery, video, variantLabel);
+    setPendingYouTubeClarification(null);
+  };
+
+  const findRecentListenForQuery = (requestQuery: string) => {
+    const normalizedQuery = normalizeYouTubeMemoryKey(requestQuery);
+    return recentYouTubeListens.find((entry) => normalizeYouTubeMemoryKey(entry.requestQuery) === normalizedQuery) || null;
   };
 
   const readLegacySessions = () => {
@@ -1117,74 +1225,132 @@ export default function Home() {
     return true;
   };
 
-  const handleSoundCloudPlayback = async (text: string) => {
-    const intent = parseSoundCloudPlaybackIntent(text);
+  const handleYouTubePlayback = async (text: string) => {
+    if (isRecentListenQuestion(text)) {
+      const mostRecentListen = recentYouTubeListens[0];
+      if (!mostRecentListen) {
+        return {
+          handled: true,
+          assistantMessage: "I do not have any recent YouTube listens saved yet, sir.",
+        };
+      }
+
+      return {
+        handled: true,
+        assistantMessage: `Sir, your most recent listen was ${mostRecentListen.video.title} from ${mostRecentListen.video.channel}.${mostRecentListen.variantLabel ? ` You picked the ${mostRecentListen.variantLabel}.` : ""} Do you want me to play this again?`,
+      };
+    }
+
+    if (pendingYouTubeClarification) {
+      const selectedOption = pendingYouTubeClarification.options.find((option) => {
+        return new RegExp(`\\b${option.key}\\b`, "i").test(text) || new RegExp(`\\b${option.label}\\b`, "i").test(text);
+      });
+
+      if (selectedOption) {
+        playResolvedYouTubeVideo(pendingYouTubeClarification.requestQuery, selectedOption.video, selectedOption.label);
+        return {
+          handled: true,
+          assistantMessage: `Playing the ${selectedOption.label} choice, ${selectedOption.video.title} from ${selectedOption.video.channel}, sir.`,
+        };
+      }
+    }
+
+    if (isRecentReplayRequest(text)) {
+      const mostRecentListen = recentYouTubeListens[0];
+      if (!mostRecentListen) {
+        return {
+          handled: true,
+          assistantMessage: "I do not have a recent YouTube listen to replay yet, sir.",
+        };
+      }
+
+      playResolvedYouTubeVideo(mostRecentListen.requestQuery, mostRecentListen.video, mostRecentListen.variantLabel);
+      return {
+        handled: true,
+        assistantMessage: `Playing ${mostRecentListen.video.title} from ${mostRecentListen.video.channel} again, sir. This was your most recent listen.`,
+      };
+    }
+
+    const intent = parseYouTubePlaybackIntent(text);
 
     if (!intent) {
       return null;
     }
 
     if (intent.kind === "playlist") {
-      const normalizedAlias = normalizeSoundCloudAliasName(intent.aliasName || "");
-      const matchingAlias = soundCloudAliases.find(
-        (alias) => normalizeSoundCloudAliasName(alias.name) === normalizedAlias
+      const normalizedAlias = normalizeYouTubeAliasName(intent.aliasName || "");
+      const matchingAlias = youTubeAliases.find(
+        (alias) => normalizeYouTubeAliasName(alias.name) === normalizedAlias
       );
 
       if (!matchingAlias) {
         return {
           handled: true,
-          assistantMessage: `I couldn't find a saved SoundCloud playlist called "${intent.aliasName}". Open Settings and add it first, sir.`,
+          assistantMessage: `I couldn't find a saved YouTube playlist called "${intent.aliasName}". Open Settings and add it first, sir.`,
         };
       }
 
-      setSoundCloudPlayer({
+      setYouTubePlayer({
         title: matchingAlias.name,
-        subtitle: "SoundCloud playlist",
+        subtitle: "YouTube playlist",
         sourceUrl: matchingAlias.url,
-        embedUrl: buildSoundCloudEmbedUrl(matchingAlias.url),
+        embedUrl: buildYouTubeEmbedUrl(matchingAlias.url),
       });
+      setPendingYouTubeClarification(null);
 
       return {
         handled: true,
-        assistantMessage: `Playing your ${matchingAlias.name} playlist on SoundCloud, sir.`,
+        assistantMessage: `Playing your ${matchingAlias.name} playlist on YouTube, sir.`,
       };
     }
 
     const params = new URLSearchParams({
-      mode: "track",
+      mode: "video",
       query: intent.query || "",
       newest: intent.newest ? "true" : "false",
+      rawRequest: intent.rawRequest || text,
     });
 
     try {
-      const response = await fetch(`/api/soundcloud?${params.toString()}`);
+      const response = await fetch(`/api/youtube?${params.toString()}`);
       const data = await response.json();
 
-      if (!response.ok || !data?.track?.permalinkUrl) {
+      if (data?.needsClarification && data?.clarification?.options) {
+        const clarification = data.clarification as PendingYouTubeClarification;
+        setPendingYouTubeClarification(clarification);
+        const recentMatch = findRecentListenForQuery(intent.query || text);
+        const optionSummary = clarification.options
+          .map((option) => `${option.label}: ${option.video.title} from ${option.video.channel} (${option.video.viewCount.toLocaleString()} views)`)
+          .join(". ");
+
+        return {
+          handled: true,
+          assistantMessage: recentMatch
+            ? `${clarification.prompt} ${optionSummary}. Last time for this request you played ${recentMatch.video.title} from ${recentMatch.video.channel}${recentMatch.variantLabel ? ` as the ${recentMatch.variantLabel}` : ""}. Do you want me to play this again, or should I use the OST or the remix, sir?`
+            : `${clarification.prompt} ${optionSummary}. Tell me OST or remix, sir.`,
+        };
+      }
+
+      if (!response.ok || !data?.video?.url) {
         return {
           handled: true,
           assistantMessage: typeof data?.error === "string"
             ? `${data.error} I could not start playback, sir.`
-            : "I couldn't start SoundCloud playback right now, sir.",
+            : "I couldn't start YouTube playback right now, sir.",
         };
       }
 
-      setSoundCloudPlayer({
-        title: data.track.title,
-        subtitle: data.track.artist ? `SoundCloud track • ${data.track.artist}` : "SoundCloud track",
-        sourceUrl: data.track.permalinkUrl,
-        embedUrl: buildSoundCloudEmbedUrl(data.track.permalinkUrl),
-      });
+      playResolvedYouTubeVideo(intent.query || text, data.video as YouTubeVideoChoice);
 
       return {
         handled: true,
-        assistantMessage: `Playing ${data.track.title}${data.track.artist ? ` by ${data.track.artist}` : ""} on SoundCloud, sir.`,
+        assistantMessage: `Playing ${data.video.title}${data.video.channel ? ` from ${data.video.channel}` : ""} on YouTube, sir.`,
       };
     } catch (error) {
-      console.error("SoundCloud playback error:", error);
+      console.error("YouTube playback error:", error);
       return {
         handled: true,
-        assistantMessage: "I couldn't reach SoundCloud right now, sir.",
+        assistantMessage: "I couldn't reach YouTube right now, sir.",
       };
     }
   };
@@ -1375,17 +1541,20 @@ export default function Home() {
       return;
     }
 
-    const syncSoundCloudAliases = () => {
-      setSoundCloudAliases(
-        parseStoredSoundCloudPlaylistAliases(localStorage.getItem(SOUNDCLOUD_PLAYLIST_STORAGE_KEY))
+    const syncYouTubeAliases = () => {
+      setYouTubeAliases(
+        parseStoredYouTubePlaylistAliases(localStorage.getItem(YOUTUBE_PLAYLIST_STORAGE_KEY))
+      );
+      setRecentYouTubeListens(
+        parseStoredRecentYouTubeListens(localStorage.getItem(YOUTUBE_RECENT_LISTENS_STORAGE_KEY))
       );
     };
 
-    syncSoundCloudAliases();
-    window.addEventListener("storage", syncSoundCloudAliases);
+    syncYouTubeAliases();
+    window.addEventListener("storage", syncYouTubeAliases);
 
     return () => {
-      window.removeEventListener("storage", syncSoundCloudAliases);
+      window.removeEventListener("storage", syncYouTubeAliases);
     };
   }, []);
 
@@ -1608,11 +1777,11 @@ export default function Home() {
         return;
       }
 
-      const soundCloudResult = await handleSoundCloudPlayback(outboundInput);
-      if (soundCloudResult?.handled) {
+      const youTubeResult = await handleYouTubePlayback(outboundInput);
+      if (youTubeResult?.handled) {
         const nextMessages: Message[] = [...updated, {
           role: "assistant",
-          content: soundCloudResult.assistantMessage,
+          content: youTubeResult.assistantMessage,
         }];
         setMessages(nextMessages);
         await persistSession(nextMessages, currentSessionId);
@@ -2028,19 +2197,19 @@ export default function Home() {
         </div>
       )}
 
-      {soundCloudPlayer && (
+      {youTubePlayer && (
         <div className="border-b border-border/30 bg-card/20 px-6 py-3">
           <div className="rounded-[24px] border border-border/60 bg-card/70 p-4 shadow-[0_18px_40px_rgba(2,6,23,0.18)] backdrop-blur-xl">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">SoundCloud Now Playing</div>
-                <div className="mt-2 text-base font-semibold text-foreground">{soundCloudPlayer.title}</div>
-                <div className="mt-1 text-sm text-muted-foreground">{soundCloudPlayer.subtitle}</div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">YouTube Now Playing</div>
+                <div className="mt-2 text-base font-semibold text-foreground">{youTubePlayer.title}</div>
+                <div className="mt-1 text-sm text-muted-foreground">{youTubePlayer.subtitle}</div>
               </div>
               <Button
                 variant="ghost"
                 size="icon"
-                onClick={() => setSoundCloudPlayer(null)}
+                onClick={() => setYouTubePlayer(null)}
                 title="Close player"
               >
                 <X className="w-4 h-4" />
@@ -2048,11 +2217,11 @@ export default function Home() {
             </div>
             <div className="mt-4 overflow-hidden rounded-2xl border border-border/60 bg-black/30">
               <iframe
-                title="SoundCloud player"
-                src={soundCloudPlayer.embedUrl}
+                title="YouTube player"
+                src={youTubePlayer.embedUrl}
                 width="100%"
-                height="166"
-                allow="autoplay"
+                height="315"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
               />
             </div>
           </div>
