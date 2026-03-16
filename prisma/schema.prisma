@@ -36,6 +36,22 @@ model GoogleCalendarConnection {
   @@unique([provider])
 }
 
+model YouTubeConnection {
+  id           Int      @id @default(autoincrement())
+  provider     String   @default("youtube")
+  email        String?
+  channelId    String?
+  channelTitle String?
+  accessToken  String   @db.Text
+  refreshToken String?  @db.Text
+  expiryDate   BigInt?
+  scope        String?  @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([provider])
+}
+
 model PendingCalendarDraft {
   id                String   @id @default(cuid())
   source            String   @default("loco")

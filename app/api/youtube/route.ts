@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { parseYouTubeSearchFilters, type YouTubeVideoSearchFilters } from "@/lib/youtube";
+import {
+  deleteYouTubeConnection,
+  getAuthorizedYouTubeClient,
+  getStoredYouTubeConnection,
+  getYouTubeOAuthConfig,
+} from "@/lib/youtubeOAuth";
 
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 
@@ -38,6 +44,14 @@ interface ClarificationOption {
   };
 }
 
+interface AuthorizedPlaylistResult {
+  id: string;
+  title: string;
+  url: string;
+  channel: string;
+  itemCount: number;
+}
+
 const NOISE_TERMS = [
   "reaction",
   "reacts",
@@ -71,6 +85,206 @@ const THEME_TERMS = ["theme", "ost", "soundtrack", "opening", "ending", "op", "e
 const THEME_NOISE_TERMS = ["tutorial", "piano tutorial", "guitar tutorial", "lesson", "how to play", "sheet", "tabs", "synthesia", "cover", "piano"];
 const THEME_CLIP_NOISE_TERMS = ["plays for the first time", "first time", "scene", "moment", "episode", "clip", "shorts", "short", "explained", "breakdown", "reaction"];
 const REMIX_TERMS = ["remix", "mix", "edit audio", "nightcore", "bootleg"];
+
+function isOAuthConfigured() {
+  return Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && (process.env.YOUTUBE_REDIRECT_URI || process.env.APP_URL));
+}
+
+function normalizeLibraryText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getPersonalLibraryKind(rawRequest: string) {
+  const normalized = normalizeLibraryText(rawRequest);
+
+  if (/\bwatch later\b/.test(normalized)) {
+    return "watch-later" as const;
+  }
+  if (/\bliked videos\b/.test(normalized)) {
+    return "liked" as const;
+  }
+  if (/\bmy uploads\b|\bmy videos\b/.test(normalized)) {
+    return "uploads" as const;
+  }
+  if (/\bmy subscriptions\b/.test(normalized)) {
+    return "subscriptions" as const;
+  }
+
+  return null;
+}
+
+function extractPersonalLibrarySearchQuery(rawRequest: string) {
+  return rawRequest
+    .replace(/^(?:hey\s+)?loco[,:\s-]*/i, "")
+    .replace(/^(?:play|show|find|put\s+on|open)\s+(?:me\s+)?(?:the\s+)?/i, "")
+    .replace(/\b(?:my uploads|my videos|liked videos|watch later|my subscriptions)\b/gi, " ")
+    .replace(/\bon\s+youtube\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toPlaylistVideoItem(item: any): YouTubeSearchItem | null {
+  const videoId = item?.contentDetails?.videoId;
+  const title = item?.snippet?.title;
+
+  if (!videoId || !title || title === "Deleted video" || title === "Private video") {
+    return null;
+  }
+
+  return {
+    id: {
+      videoId,
+    },
+    snippet: {
+      title,
+      channelTitle: item?.snippet?.videoOwnerChannelTitle || item?.snippet?.channelTitle || "YouTube",
+      description: item?.snippet?.description || "",
+      publishedAt: item?.contentDetails?.videoPublishedAt || item?.snippet?.publishedAt || undefined,
+    },
+  };
+}
+
+async function getAuthorizedPlaylistId(rawRequest: string, youtube: NonNullable<Awaited<ReturnType<typeof getAuthorizedYouTubeClient>>>["youtube"]) {
+  const channelResponse = await youtube.channels.list({
+    mine: true,
+    part: ["contentDetails"],
+    maxResults: 1,
+  });
+
+  const relatedPlaylists = channelResponse.data.items?.[0]?.contentDetails?.relatedPlaylists;
+  const kind = getPersonalLibraryKind(rawRequest);
+
+  if (kind === "uploads") {
+    return relatedPlaylists?.uploads || null;
+  }
+
+  if (kind === "liked") {
+    return relatedPlaylists?.likes || null;
+  }
+
+  if (kind === "watch-later") {
+    return relatedPlaylists?.watchLater || null;
+  }
+
+  if (kind === "subscriptions") {
+    return "subscriptions" as const;
+  }
+
+  return null;
+}
+
+async function getAuthorizedPersonalVideo(rawRequest: string, newest: boolean, youtube: NonNullable<Awaited<ReturnType<typeof getAuthorizedYouTubeClient>>>["youtube"]) {
+  const playlistId = await getAuthorizedPlaylistId(rawRequest, youtube);
+
+  if (playlistId === "subscriptions") {
+    return {
+      error: "Signed-in subscription playback is not implemented yet. Try liked videos, watch later, uploads, or one of your playlists.",
+      status: 400,
+    };
+  }
+
+  if (!playlistId) {
+    return {
+      error: "I could not access that personal YouTube library yet. Sign in again, or try liked videos, watch later, uploads, or one of your playlists.",
+      status: 404,
+    };
+  }
+
+  const response = await youtube.playlistItems.list({
+    playlistId,
+    part: ["snippet", "contentDetails"],
+    maxResults: 50,
+  });
+
+  const playlistItems = (response.data.items || [])
+    .map((item) => toPlaylistVideoItem(item))
+    .filter((item): item is YouTubeSearchItem => Boolean(item));
+
+  if (playlistItems.length === 0) {
+    return {
+      error: "That personal YouTube library is empty or unavailable right now.",
+      status: 404,
+    };
+  }
+
+  const narrowedQuery = extractPersonalLibrarySearchQuery(rawRequest);
+  const filters = narrowedQuery
+    ? parseYouTubeSearchFilters(rawRequest, narrowedQuery, newest)
+    : null;
+
+  const video = filters ? selectVideo(playlistItems, filters) : playlistItems[0];
+
+  if (!video?.id?.videoId) {
+    return {
+      error: narrowedQuery
+        ? `I could not find a matching saved YouTube item for "${narrowedQuery}" in your signed-in library.`
+        : "I could not find a playable video in that signed-in YouTube library.",
+      status: 404,
+    };
+  }
+
+  return {
+    video: toVideoResponse(video),
+    status: 200,
+  };
+}
+
+async function findAuthorizedPlaylist(query: string, youtube: NonNullable<Awaited<ReturnType<typeof getAuthorizedYouTubeClient>>>["youtube"]): Promise<AuthorizedPlaylistResult | null> {
+  const response = await youtube.playlists.list({
+    mine: true,
+    part: ["snippet", "contentDetails"],
+    maxResults: 50,
+  });
+
+  const normalizedQuery = normalizeLibraryText(query);
+  const playlists = (response.data.items || []).filter((playlist) => Boolean(playlist.id && playlist.snippet?.title));
+
+  if (playlists.length === 0) {
+    return null;
+  }
+
+  const rankedPlaylists = playlists
+    .map((playlist) => {
+      const title = normalizeLibraryText(playlist.snippet?.title || "");
+      let score = 0;
+
+      if (title === normalizedQuery) {
+        score += 100;
+      } else if (title.includes(normalizedQuery)) {
+        score += 50;
+      }
+
+      for (const token of normalizedQuery.split(" ").filter(Boolean)) {
+        if (title.includes(token)) {
+          score += 8;
+        }
+      }
+
+      return {
+        playlist,
+        score,
+      };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  const match = rankedPlaylists[0]?.playlist;
+  if (!match?.id || !match.snippet?.title) {
+    return null;
+  }
+
+  return {
+    id: match.id,
+    title: match.snippet.title,
+    url: `https://www.youtube.com/playlist?list=${match.id}`,
+    channel: match.snippet.channelTitle || "YouTube",
+    itemCount: Number(match.contentDetails?.itemCount || 0),
+  };
+}
 
 function isMusicLikeRequest(filters: YouTubeVideoSearchFilters) {
   return Boolean(
@@ -685,21 +899,38 @@ export async function GET(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get("mode");
 
   if (!mode) {
+    const oauthConfigured = isOAuthConfigured();
+    let redirectUri: string | null = null;
+    let connection = null;
+    let storageReady = true;
+
+    try {
+      redirectUri = getYouTubeOAuthConfig().redirectUri;
+    } catch {
+      redirectUri = null;
+    }
+
+    if (oauthConfigured) {
+      try {
+        connection = await getStoredYouTubeConnection();
+      } catch (error) {
+        console.error("YouTube connection status error:", error);
+        storageReady = false;
+      }
+    }
+
     return NextResponse.json({
       configured: Boolean(YOUTUBE_API_KEY),
+      oauthConfigured,
+      storageReady,
+      connected: Boolean(connection),
+      email: connection?.email ?? null,
+      channelTitle: connection?.channelTitle ?? null,
+      redirectUri,
     });
   }
 
-  if (!YOUTUBE_API_KEY) {
-    return NextResponse.json(
-      {
-        error: "YouTube is not configured yet. Add YOUTUBE_API_KEY to your environment.",
-      },
-      { status: 400 }
-    );
-  }
-
-  if (mode !== "video") {
+  if (mode !== "video" && mode !== "playlist") {
     return NextResponse.json({ error: "Unsupported YouTube mode." }, { status: 400 });
   }
 
@@ -708,15 +939,98 @@ export async function GET(request: NextRequest) {
   const newest = request.nextUrl.searchParams.get("newest") === "true";
 
   if (!query) {
-    return NextResponse.json({ error: "Video query is required." }, { status: 400 });
+    return NextResponse.json({ error: mode === "playlist" ? "Playlist query is required." : "Video query is required." }, { status: 400 });
+  }
+
+  if (mode === "playlist") {
+    if (!isOAuthConfigured()) {
+      return NextResponse.json(
+        {
+          error: "YouTube sign-in is not configured yet. Add Google OAuth variables first.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const authorizedClient = await getAuthorizedYouTubeClient(request.nextUrl.origin);
+    if (!authorizedClient) {
+      return NextResponse.json(
+        {
+          error: "Sign in with YouTube first, then ask me to play one of your playlists.",
+        },
+        { status: 400 }
+      );
+    }
+
+    try {
+      const playlist = await findAuthorizedPlaylist(query, authorizedClient.youtube);
+
+      if (!playlist) {
+        return NextResponse.json({ error: `I could not find a signed-in YouTube playlist named "${query}".` }, { status: 404 });
+      }
+
+      return NextResponse.json({
+        success: true,
+        playlist,
+      });
+    } catch (error) {
+      console.error("Authorized YouTube playlist lookup error:", error);
+      return NextResponse.json({ error: "I could not reach your signed-in YouTube playlists right now." }, { status: 502 });
+    }
+  }
+
+  if (!YOUTUBE_API_KEY && !isOAuthConfigured()) {
+    return NextResponse.json(
+      {
+        error: "YouTube is not configured yet. Add YOUTUBE_API_KEY for public search or Google OAuth variables for personal YouTube access.",
+      },
+      { status: 400 }
+    );
   }
 
   const filters = parseYouTubeSearchFilters(rawRequest, query, newest);
 
   if (filters.myVideos) {
+    if (!isOAuthConfigured()) {
+      return NextResponse.json(
+        {
+          error: "Personal YouTube library requests need YouTube sign-in to be configured first. Add Google OAuth variables, then connect your account in Settings.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const authorizedClient = await getAuthorizedYouTubeClient(request.nextUrl.origin);
+    if (!authorizedClient) {
+      return NextResponse.json(
+        {
+          error: "Personal YouTube library requests need a signed-in YouTube account connection. Connect YouTube in Settings first.",
+        },
+        { status: 400 }
+      );
+    }
+
+    try {
+      const personalResult = await getAuthorizedPersonalVideo(rawRequest, newest, authorizedClient.youtube);
+
+      if (!personalResult.video) {
+        return NextResponse.json({ error: personalResult.error }, { status: personalResult.status });
+      }
+
+      return NextResponse.json({
+        success: true,
+        video: personalResult.video,
+      });
+    } catch (error) {
+      console.error("Authorized YouTube personal library error:", error);
+      return NextResponse.json({ error: "I could not reach your signed-in YouTube library right now." }, { status: 502 });
+    }
+  }
+
+  if (!YOUTUBE_API_KEY) {
     return NextResponse.json(
       {
-        error: "Personal YouTube library requests need a signed-in YouTube account connection. Add OAuth first, or ask for a public video, channel, artist, playlist, or live stream.",
+        error: "Public YouTube search is not configured yet. Add YOUTUBE_API_KEY to your environment.",
       },
       { status: 400 }
     );
@@ -797,5 +1111,15 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error("YouTube API error:", error);
     return NextResponse.json({ error: "Unable to reach YouTube right now." }, { status: 502 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    await deleteYouTubeConnection();
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("YouTube disconnect error:", error);
+    return NextResponse.json({ success: false, error: "Could not disconnect YouTube right now." }, { status: 500 });
   }
 }

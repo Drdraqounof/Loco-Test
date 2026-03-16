@@ -47,6 +47,12 @@ interface PiperStatus {
 
 interface YouTubeStatus {
   configured: boolean;
+  oauthConfigured: boolean;
+  storageReady?: boolean;
+  connected: boolean;
+  email?: string | null;
+  channelTitle?: string | null;
+  redirectUri?: string | null;
 }
 
 interface TabButtonProps {
@@ -151,7 +157,7 @@ export default function SettingsPage() {
   const [calendarLoading, setCalendarLoading] = useState(true);
   const [calendarMessage, setCalendarMessage] = useState<string | null>(null);
   const [piperStatus, setPiperStatus] = useState<PiperStatus | null>(null);
-  const [youTubeStatus, setYouTubeStatus] = useState<YouTubeStatus>({ configured: false });
+  const [youTubeStatus, setYouTubeStatus] = useState<YouTubeStatus>({ configured: false, oauthConfigured: false, connected: false });
   const [youTubeAliases, setYouTubeAliases] = useState<YouTubePlaylistAlias[]>([]);
   const [youTubeAliasName, setYouTubeAliasName] = useState("");
   const [youTubeAliasUrl, setYouTubeAliasUrl] = useState("");
@@ -179,11 +185,26 @@ export default function SettingsPage() {
   const loadYouTubeStatus = async () => {
     try {
       const response = await fetch("/api/youtube", { cache: "no-store" });
-      const data = await response.json();
-      setYouTubeStatus({ configured: Boolean(data?.configured) });
+      const rawBody = await response.text();
+      const data = rawBody ? JSON.parse(rawBody) : {};
+
+      if (!response.ok) {
+        throw new Error(typeof data?.error === "string" ? data.error : "Failed to load YouTube status.");
+      }
+
+      setYouTubeStatus({
+        configured: Boolean(data?.configured),
+        oauthConfigured: Boolean(data?.oauthConfigured),
+        storageReady: data?.storageReady !== false,
+        connected: Boolean(data?.connected),
+        email: data?.email ?? null,
+        channelTitle: data?.channelTitle ?? null,
+        redirectUri: data?.redirectUri ?? null,
+      });
     } catch (error) {
       console.error("Failed to load YouTube status:", error);
-      setYouTubeStatus({ configured: false });
+      setYouTubeStatus({ configured: false, oauthConfigured: false, storageReady: false, connected: false });
+      setYouTubeMessage("Could not load YouTube status. If you just added the OAuth model, run your Prisma migration first.");
     }
   };
 
@@ -281,6 +302,21 @@ export default function SettingsPage() {
     void loadCalendarStatus();
   }, []);
 
+  useEffect(() => {
+    const youTubeParam = new URLSearchParams(window.location.search).get("youtube");
+    if (!youTubeParam) return;
+
+    const messageMap: Record<string, string> = {
+      connected: "YouTube connected successfully.",
+      error: "YouTube connection failed.",
+      "invalid-state": "YouTube sign-in could not be verified. Try again.",
+    };
+
+    setYouTubeMessage(messageMap[youTubeParam] || null);
+    setSettingsTab("integrations");
+    void loadYouTubeStatus();
+  }, []);
+
   const handleVoiceChange = (newVoice: VoiceKey) => {
     setVoice(newVoice);
     localStorage.setItem("selectedVoice", newVoice);
@@ -334,6 +370,26 @@ export default function SettingsPage() {
       console.error("Failed to disconnect Google Calendar:", error);
       setCalendarMessage("Could not disconnect Google Calendar.");
       setCalendarLoading(false);
+    }
+  };
+
+  const handleConnectYouTube = () => {
+    window.location.href = "/api/youtube/connect";
+  };
+
+  const handleDisconnectYouTube = async () => {
+    setYouTubeMessage(null);
+    try {
+      const response = await fetch("/api/youtube", { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error("Disconnect failed");
+      }
+
+      setYouTubeMessage("YouTube disconnected.");
+      await loadYouTubeStatus();
+    } catch (error) {
+      console.error("Failed to disconnect YouTube:", error);
+      setYouTubeMessage("Could not disconnect YouTube.");
     }
   };
 
@@ -774,9 +830,9 @@ export default function SettingsPage() {
                           <Link2 className="h-3.5 w-3.5" />
                           YouTube
                         </div>
-                        <h3 className="mt-4 text-xl font-semibold">Voice and text video shortcuts</h3>
+                        <h3 className="mt-4 text-xl font-semibold">Signed-in playlists and personal YouTube playback</h3>
                         <p className="mt-2 max-w-lg text-sm leading-6 text-muted-foreground">
-                          First version only, sir. Video searches use the YouTube API, and personal playlist phrases like “play my boss playlist” are mapped through saved playlist URLs below.
+                          Public video searches still use the YouTube API. If you sign in with Google, Loco can also open your own playlists and personal library phrases like liked videos, watch later, or uploads.
                         </p>
                       </div>
                       <div
@@ -789,24 +845,58 @@ export default function SettingsPage() {
 
                     <div className="mt-6 grid gap-3 sm:grid-cols-3">
                       <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">API</div>
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Public API</div>
                         <div className="mt-2 text-sm font-semibold text-foreground">{youTubeStatus.configured ? "Ready" : "Missing"}</div>
                       </div>
                       <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Playlist aliases</div>
-                        <div className="mt-2 text-sm font-semibold text-foreground">{youTubeAliases.length}</div>
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">OAuth</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">{youTubeStatus.oauthConfigured ? "Ready" : "Missing"}</div>
                       </div>
                       <div className="rounded-2xl border border-border/60 bg-card/70 p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Supported commands</div>
-                        <div className="mt-2 text-sm font-semibold text-foreground">Play playlists and videos</div>
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Connection</div>
+                        <div className="mt-2 text-sm font-semibold text-foreground">{youTubeStatus.connected ? "Connected" : "Not connected"}</div>
                       </div>
                     </div>
+
+                    {youTubeStatus.email && (
+                      <div className="mt-5 flex items-center gap-3 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-900 shadow-sm">
+                          <GoogleMark />
+                        </div>
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-200/80">Connected YouTube account</div>
+                          <div className="mt-1 font-semibold">{youTubeStatus.email}</div>
+                          {youTubeStatus.channelTitle && <div className="mt-1 text-xs text-emerald-200/80">Channel: {youTubeStatus.channelTitle}</div>}
+                        </div>
+                      </div>
+                    )}
 
                     {youTubeMessage && (
                       <div className="mt-5 rounded-2xl border border-primary/20 bg-primary/10 px-4 py-3 text-sm leading-6 text-foreground">
                         {youTubeMessage}
                       </div>
                     )}
+
+                    <div className="mt-6 flex flex-wrap gap-3">
+                      <Button
+                        onClick={handleConnectYouTube}
+                        disabled={!youTubeStatus.oauthConfigured}
+                        className="rounded-full border border-white/15 bg-white text-slate-900 shadow-[0_18px_40px_rgba(255,255,255,0.14)] hover:bg-white/90 disabled:border-white/10 disabled:bg-white/70 disabled:text-slate-500"
+                      >
+                        <GoogleMark />
+                        {youTubeStatus.connected ? "Reconnect YouTube" : "Sign in with Google"}
+                      </Button>
+
+                      <Button
+                        variant="surface"
+                        onClick={handleDisconnectYouTube}
+                        disabled={!youTubeStatus.connected}
+                        className="rounded-full px-5"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        Disconnect
+                      </Button>
+                    </div>
 
                     <div className="mt-6 grid gap-3 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)_auto]">
                       <input
@@ -838,12 +928,36 @@ export default function SettingsPage() {
                           <p>“Play my boss playlist.”</p>
                         </div>
                         <div>
+                          <div className="font-semibold text-foreground">Signed-in playlist</div>
+                          <p>“Play my soundtrack playlist.”</p>
+                        </div>
+                        <div>
                           <div className="font-semibold text-foreground">Newest upload</div>
                           <p>“Play the newest Bad Bunny video on YouTube.”</p>
                         </div>
                         <div>
                           <div className="font-semibold text-foreground">YouTube search</div>
                           <p>“Play After Hours on YouTube.”</p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">Personal library</div>
+                          <p>“Play my liked videos.” or “Play watch later.”</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-border/70 bg-background/35 p-6">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">YouTube OAuth Details</div>
+                      <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+                        <div>
+                          <div className="font-semibold text-foreground">Redirect URI</div>
+                          <p className="mt-1 break-all font-mono text-xs leading-5 text-muted-foreground">
+                            {youTubeStatus.redirectUri || "Not available"}
+                          </p>
+                        </div>
+                        <div>
+                          <div className="font-semibold text-foreground">Environment</div>
+                          <p className="mt-1">{youTubeStatus.oauthConfigured ? "Google OAuth variables detected for YouTube sign-in." : "Google OAuth environment variables for YouTube are still missing or invalid."}</p>
                         </div>
                       </div>
                     </div>

@@ -1283,25 +1283,58 @@ export default function Home() {
         (alias) => normalizeYouTubeAliasName(alias.name) === normalizedAlias
       );
 
-      if (!matchingAlias) {
+      if (matchingAlias) {
+        setYouTubePlayer({
+          title: matchingAlias.name,
+          subtitle: "YouTube playlist",
+          sourceUrl: matchingAlias.url,
+          embedUrl: buildYouTubeEmbedUrl(matchingAlias.url),
+        });
+        setPendingYouTubeClarification(null);
+
         return {
           handled: true,
-          assistantMessage: `I couldn't find a saved YouTube playlist called "${intent.aliasName}". Open Settings and add it first, sir.`,
+          assistantMessage: `Playing your ${matchingAlias.name} playlist on YouTube, sir.`,
         };
       }
 
-      setYouTubePlayer({
-        title: matchingAlias.name,
-        subtitle: "YouTube playlist",
-        sourceUrl: matchingAlias.url,
-        embedUrl: buildYouTubeEmbedUrl(matchingAlias.url),
-      });
-      setPendingYouTubeClarification(null);
+      try {
+        const playlistParams = new URLSearchParams({
+          mode: "playlist",
+          query: intent.aliasName || "",
+          rawRequest: intent.rawRequest || text,
+        });
+        const response = await fetch(`/api/youtube?${playlistParams.toString()}`);
+        const data = await response.json();
 
-      return {
-        handled: true,
-        assistantMessage: `Playing your ${matchingAlias.name} playlist on YouTube, sir.`,
-      };
+        if (!response.ok || !data?.playlist?.url) {
+          return {
+            handled: true,
+            assistantMessage: typeof data?.error === "string"
+              ? `${data.error} I could not start playlist playback, sir.`
+              : `I couldn't find a saved or signed-in YouTube playlist called "${intent.aliasName}", sir.`,
+          };
+        }
+
+        setYouTubePlayer({
+          title: data.playlist.title,
+          subtitle: data.playlist.channel ? `YouTube playlist • ${data.playlist.channel}` : "YouTube playlist",
+          sourceUrl: data.playlist.url,
+          embedUrl: buildYouTubeEmbedUrl(data.playlist.url),
+        });
+        setPendingYouTubeClarification(null);
+
+        return {
+          handled: true,
+          assistantMessage: `Playing your signed-in YouTube playlist ${data.playlist.title}, sir.`,
+        };
+      } catch (error) {
+        console.error("YouTube playlist playback error:", error);
+        return {
+          handled: true,
+          assistantMessage: `I couldn't find a saved or signed-in YouTube playlist called "${intent.aliasName}", sir.`,
+        };
+      }
     }
 
     const params = new URLSearchParams({
