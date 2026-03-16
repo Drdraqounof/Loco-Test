@@ -483,16 +483,60 @@ export function buildYouTubeEmbedUrl(resource: string, autoPlay = true) {
   return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
 }
 
-export function parseYouTubePlaybackIntent(text: string): YouTubePlaybackIntent | null {
-  const normalized = text
+function normalizePlaybackIntentInput(text: string) {
+  return text
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/^(?:hey\s+)?loco[,:\s-]*/i, "")
     .replace(/\b(?:you\s*tube|youtbe|yutube|youtuube|yt)\b/gi, "youtube")
+    .trim();
+}
+
+function cleanupPlaybackSegment(value: string) {
+  return value
+    .replace(/^(?:hey|yo|okay|ok|please|uh|um)\s+/i, "")
+    .replace(/^(?:hey\s+|yo\s+)?loco[,:\s-]*/i, "")
     .replace(/[,:\s-]+loco$/i, "")
     .trim();
+}
 
-  if (!/^(?:play|show|find|put\s+on)\b/i.test(normalized)) {
+function extractPlaybackCommand(text: string) {
+  const normalized = normalizePlaybackIntentInput(text);
+  if (!normalized) {
+    return "";
+  }
+
+  const sentenceLikeSegments = normalized
+    .split(/[.!?\n]+/)
+    .map((segment) => cleanupPlaybackSegment(segment))
+    .filter(Boolean);
+
+  const candidates = [
+    ...sentenceLikeSegments,
+    cleanupPlaybackSegment(normalized),
+  ];
+
+  for (const candidate of candidates) {
+    if (/^(?:play|show|find|put\s+on|open)\b/i.test(candidate)) {
+      return candidate;
+    }
+
+    const commandMatch = candidate.match(/\b(?:play|show|find|put\s+on|open)\b[\s\S]*$/i);
+    if (commandMatch?.[0]) {
+      const extracted = commandMatch[0].trim();
+      const prefix = candidate.slice(0, commandMatch.index || 0).trim();
+      if (!prefix || /^(?:hey|yo|okay|ok|please|uh|um|loco|sir|assistant)$/i.test(prefix)) {
+        return extracted;
+      }
+    }
+  }
+
+  return cleanupPlaybackSegment(normalized);
+}
+
+export function parseYouTubePlaybackIntent(text: string): YouTubePlaybackIntent | null {
+  const normalized = extractPlaybackCommand(text);
+
+  if (!/^(?:play|show|find|put\s+on|open)\b/i.test(normalized)) {
     return null;
   }
 
