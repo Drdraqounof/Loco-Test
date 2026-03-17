@@ -244,7 +244,7 @@ jobs:
 
             cd "${{ secrets.EC2_PROJECT_PATH }}"
 
-            cat <<EOF > .env.production
+            cat <<EOF > .env
             APP_IMAGE=${{ steps.image.outputs.name }}:${{ github.sha }}
             OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
@@ -257,11 +257,13 @@ jobs:
             POSTGRES_DB=${{ secrets.POSTGRES_DB }}
             EOF
 
+            cp .env .env.production
+
             if [ -n "$ghcr_token" ]; then
               echo "$ghcr_token" | $docker_cmd login ghcr.io -u "${ghcr_username:-${{ github.repository_owner }}}" --password-stdin
             fi
 
-            $docker_cmd compose --env-file .env.production down --remove-orphans || true
+            $docker_cmd compose down --remove-orphans || true
 
             # Reclaim safe Docker disk space before pulling new images.
             $docker_cmd container prune -f || true
@@ -272,13 +274,13 @@ jobs:
             df -h
             $docker_cmd system df || true
 
-            $docker_cmd compose --env-file .env.production pull
-            $docker_cmd compose --env-file .env.production up -d
+            $docker_cmd compose pull
+            $docker_cmd compose up -d
 
             deadline=$((SECONDS + 120))
             app_container_id=""
             while [ $SECONDS -lt $deadline ]; do
-              app_container_id="$($docker_cmd compose --env-file .env.production ps -q app)"
+              app_container_id="$($docker_cmd compose ps -q app)"
               if [ -n "$app_container_id" ] && [ "$($docker_cmd inspect -f '{{.State.Health.Status}}' "$app_container_id")" = "healthy" ]; then
                 break
               fi
