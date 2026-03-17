@@ -261,8 +261,18 @@ jobs:
               echo "$ghcr_token" | $docker_cmd login ghcr.io -u "${ghcr_username:-${{ github.repository_owner }}}" --password-stdin
             fi
 
-            $docker_cmd compose --env-file .env.production pull
             $docker_cmd compose --env-file .env.production down --remove-orphans || true
+
+            # Reclaim safe Docker disk space before pulling new images.
+            $docker_cmd container prune -f || true
+            $docker_cmd image prune -af || true
+            $docker_cmd builder prune -af || true
+
+            echo "Disk usage before pull:"
+            df -h
+            $docker_cmd system df || true
+
+            $docker_cmd compose --env-file .env.production pull
             $docker_cmd compose --env-file .env.production up -d
 
             deadline=$((SECONDS + 120))
