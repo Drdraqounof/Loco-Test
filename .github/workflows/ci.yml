@@ -141,6 +141,7 @@ jobs:
           script: |
             set -e
             mkdir -p "${{ secrets.EC2_PROJECT_PATH }}"
+            rm -f "${{ secrets.EC2_PROJECT_PATH }}/docker-compose.yml"
 
       - name: Copy registry deploy compose file
         uses: appleboy/scp-action@v0.1.7
@@ -153,6 +154,21 @@ jobs:
           fingerprint: ${{ secrets.EC2_FINGERPRINT }}
           source: docker-compose.deploy.yml
           target: ${{ secrets.EC2_PROJECT_PATH }}
+
+      - name: Rename deploy compose file on EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          port: ${{ secrets.EC2_PORT || '22' }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          passphrase: ${{ secrets.EC2_PASSPHRASE }}
+          fingerprint: ${{ secrets.EC2_FINGERPRINT }}
+          command_timeout: 5m
+          script: |
+            set -e
+            cd "${{ secrets.EC2_PROJECT_PATH }}"
+            mv docker-compose.deploy.yml docker-compose.yml
 
       - name: Deploy application
         uses: appleboy/ssh-action@v1
@@ -204,14 +220,14 @@ jobs:
               echo "$ghcr_token" | $docker_cmd login ghcr.io -u "${ghcr_username:-${{ github.repository_owner }}}" --password-stdin
             fi
 
-            $docker_cmd compose --env-file .env.production -f docker-compose.deploy.yml pull
-            $docker_cmd compose --env-file .env.production -f docker-compose.deploy.yml down --remove-orphans || true
-            $docker_cmd compose --env-file .env.production -f docker-compose.deploy.yml up -d
+            $docker_cmd compose --env-file .env.production pull
+            $docker_cmd compose --env-file .env.production down --remove-orphans || true
+            $docker_cmd compose --env-file .env.production up -d
 
             deadline=$((SECONDS + 120))
             app_container_id=""
             while [ $SECONDS -lt $deadline ]; do
-              app_container_id="$($docker_cmd compose --env-file .env.production -f docker-compose.deploy.yml ps -q app)"
+              app_container_id="$($docker_cmd compose --env-file .env.production ps -q app)"
               if [ -n "$app_container_id" ] && [ "$($docker_cmd inspect -f '{{.State.Health.Status}}' "$app_container_id")" = "healthy" ]; then
                 break
               fi
