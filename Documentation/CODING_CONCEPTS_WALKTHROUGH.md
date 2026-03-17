@@ -1,6 +1,6 @@
 # Coding Concepts Walkthrough
 
-> **Last Updated:** March 17, 2026
+> **Last Updated:** March 16, 2026
 >
 > **In plain terms:** This document explains how I use core coding concepts in Loco and how those concepts help make the app work better.
 
