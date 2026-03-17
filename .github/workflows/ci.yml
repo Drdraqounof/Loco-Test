@@ -143,19 +143,7 @@ jobs:
             mkdir -p "${{ secrets.EC2_PROJECT_PATH }}"
             rm -f "${{ secrets.EC2_PROJECT_PATH }}/docker-compose.yml"
 
-      - name: Copy registry deploy compose file
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          port: ${{ secrets.EC2_PORT || '22' }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_KEY }}
-          passphrase: ${{ secrets.EC2_PASSPHRASE }}
-          fingerprint: ${{ secrets.EC2_FINGERPRINT }}
-          source: docker-compose.deploy.yml
-          target: ${{ secrets.EC2_PROJECT_PATH }}
-
-      - name: Rename deploy compose file on EC2
+      - name: Write deploy compose file on EC2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -168,7 +156,60 @@ jobs:
           script: |
             set -e
             cd "${{ secrets.EC2_PROJECT_PATH }}"
-            mv docker-compose.deploy.yml docker-compose.yml
+            cat <<'EOF' > docker-compose.yml
+            services:
+              app:
+                image: ${APP_IMAGE}
+                container_name: loco_app
+                restart: always
+                ports:
+                  - "80:3000"
+                environment:
+                  NODE_ENV: production
+                  DATABASE_URL: postgresql://${POSTGRES_USER:-loco_user}:${POSTGRES_PASSWORD:-loco_password}@db:5432/${POSTGRES_DB:-loco_db}
+                env_file:
+                  - .env.production
+                depends_on:
+                  db:
+                    condition: service_healthy
+                networks:
+                  - loco_network
+                healthcheck:
+                  test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+                  interval: 30s
+                  timeout: 3s
+                  retries: 3
+                  start_period: 40s
+
+              db:
+                image: postgres:15
+                container_name: loco_db
+                restart: always
+                environment:
+                  POSTGRES_USER: ${POSTGRES_USER:-loco_user}
+                  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loco_password}
+                  POSTGRES_DB: ${POSTGRES_DB:-loco_db}
+                ports:
+                  - "5432:5432"
+                volumes:
+                  - postgres_data:/var/lib/postgresql/data
+                networks:
+                  - loco_network
+                healthcheck:
+                  test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loco_user} -d ${POSTGRES_DB:-loco_db}"]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 5
+                  start_period: 10s
+
+            volumes:
+              postgres_data:
+                driver: local
+
+            networks:
+              loco_network:
+                driver: bridge
+            EOF
 
       - name: Deploy application
         uses: appleboy/ssh-action@v1

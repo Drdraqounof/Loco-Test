@@ -1,9 +1,10 @@
 services:
   # ── Loco App Container ───────────────────────────────────────────────────
-  # This runs the pre-built Loco image that GitHub Actions pushes to GHCR.
-  # The exact image tag comes from APP_IMAGE in .env.production on the EC2 box.
+  # Local development and CI build this image from source using the Dockerfile.
   app:
-    image: ${APP_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: loco_app
 
     # Restart the app automatically after crashes or server reboots.
@@ -18,7 +19,7 @@ services:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-loco_user}:${POSTGRES_PASSWORD:-loco_password}@db:5432/${POSTGRES_DB:-loco_db}
 
-    # Load runtime secrets written by the deployment workflow on EC2.
+    # Load runtime secrets from the local or CI environment file.
     env_file:
       - .env.production
 
