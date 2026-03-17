@@ -159,7 +159,7 @@ jobs:
             cat <<'EOF' > docker-compose.yml
             services:
               app:
-                image: ${APP_IMAGE}
+                image: ${APP_IMAGE:-ghcr.io/drdraqounof/loco-test:latest}
                 container_name: loco_app
                 restart: always
                 ports:
