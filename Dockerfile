@@ -21,6 +21,9 @@ COPY . .
 # Build the Next.js app
 RUN npx prisma generate && npm run build
 
+# Remove dev-only packages like Electron before copying node_modules into the runtime image.
+RUN npm prune --omit=dev
+
 # Runtime stage
 FROM node:20-bookworm-slim
 

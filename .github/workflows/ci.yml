@@ -8,12 +8,21 @@ on:
 
 jobs:
   build-and-verify:
-    name: Build and Verify
+    name: Build Verify and Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Compute image name
+        id: image
+        run: |
+          image_name="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "name=$image_name" >> "$GITHUB_OUTPUT"
 
       - name: Write production env file for CI
         run: |
@@ -36,6 +45,22 @@ jobs:
       - name: Verify home page responds
         run: curl --fail --silent http://localhost/
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+
       - name: Show container status on failure
         if: failure()
         run: docker compose ps
@@ -55,42 +80,151 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Compute image name
+        id: image
+        run: |
+          image_name="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "name=$image_name" >> "$GITHUB_OUTPUT"
+
+      - name: Validate deploy secrets
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_PORT: ${{ secrets.EC2_PORT }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_KEY: ${{ secrets.EC2_KEY }}
+        run: |
+          set -e
+
+          if [ -z "$EC2_HOST" ]; then
+            echo "EC2_HOST is missing"
+            exit 1
+          fi
+
+          if [ -z "$EC2_USER" ]; then
+            echo "EC2_USER is missing"
+            exit 1
+          fi
+
+          if [ -z "$EC2_KEY" ]; then
+            echo "EC2_KEY is missing"
+            exit 1
+          fi
+
+          if [[ "$EC2_KEY" != *"BEGIN "*"PRIVATE KEY"* ]]; then
+            echo "EC2_KEY does not look like a private key. Paste the full key contents into the GitHub secret."
+            exit 1
+          fi
+
+          if [[ "$EC2_KEY" == *\\n* ]]; then
+            echo "EC2_KEY appears to contain literal \\n sequences. Re-save the secret with real line breaks."
+            exit 1
+          fi
+
+          if [ -n "$EC2_PORT" ] && ! [[ "$EC2_PORT" =~ ^[0-9]+$ ]]; then
+            echo "EC2_PORT must be numeric"
+            exit 1
+          fi
+
+      - name: Prepare deploy directory
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          port: ${{ secrets.EC2_PORT || '22' }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          passphrase: ${{ secrets.EC2_PASSPHRASE }}
+          fingerprint: ${{ secrets.EC2_FINGERPRINT }}
+          command_timeout: 5m
+          script: |
+            set -e
+            mkdir -p "${{ secrets.EC2_PROJECT_PATH }}"
+
+      - name: Copy registry deploy compose file
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          port: ${{ secrets.EC2_PORT || '22' }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_KEY }}
+          passphrase: ${{ secrets.EC2_PASSPHRASE }}
+          fingerprint: ${{ secrets.EC2_FINGERPRINT }}
+          source: docker-compose.deploy.yml
+          target: ${{ secrets.EC2_PROJECT_PATH }}
+
       - name: Deploy application
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
+          port: ${{ secrets.EC2_PORT || '22' }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_KEY }}
-          command_timeout: 30m
+          passphrase: ${{ secrets.EC2_PASSPHRASE }}
+          fingerprint: ${{ secrets.EC2_FINGERPRINT }}
+          command_timeout: 20m
           script: |
             set -e
 
+            docker_cmd="docker"
+            ghcr_username="${{ secrets.GHCR_USERNAME }}"
+            ghcr_token="${{ secrets.GHCR_TOKEN }}"
+
             if ! command -v docker >/dev/null 2>&1; then
               curl -fsSL https://get.docker.com | sh
-              sudo usermod -aG docker $USER
+              sudo usermod -aG docker "$USER" || true
             fi
 
-            if [ ! -d "${{ secrets.EC2_PROJECT_PATH }}/.git" ]; then
-              git clone https://github.com/${{ github.repository }}.git "${{ secrets.EC2_PROJECT_PATH }}"
+            if ! docker info >/dev/null 2>&1; then
+              if sudo docker info >/dev/null 2>&1; then
+                docker_cmd="sudo docker"
+              else
+                echo "Docker is installed but not usable for this deploy user."
+                exit 1
+              fi
             fi
 
             cd "${{ secrets.EC2_PROJECT_PATH }}"
-            git fetch origin
-            git checkout main
-            git pull origin main
 
             cat <<EOF > .env.production
+            APP_IMAGE=${{ steps.image.outputs.name }}:${{ github.sha }}
             OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
             GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }}
             GOOGLE_CLIENT_SECRET=${{ secrets.GOOGLE_CLIENT_SECRET }}
             APP_URL=${{ secrets.APP_URL }}
             YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
             EOF
 
-            docker compose down || true
-            docker compose up -d --build
+            set -a
+            . ./.env.production
+            set +a
 
-            timeout 120 sh -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" $(docker compose ps -q app))" = "healthy" ]; do sleep 5; done'
+            if [ -n "$ghcr_token" ]; then
+              echo "$ghcr_token" | $docker_cmd login ghcr.io -u "${ghcr_username:-${{ github.repository_owner }}}" --password-stdin
+            fi
 
-            docker image prune -f
+            $docker_cmd compose -f docker-compose.deploy.yml pull
+            $docker_cmd compose -f docker-compose.deploy.yml down --remove-orphans || true
+            $docker_cmd compose -f docker-compose.deploy.yml up -d
+
+            deadline=$((SECONDS + 120))
+            app_container_id=""
+            while [ $SECONDS -lt $deadline ]; do
+              app_container_id="$($docker_cmd compose -f docker-compose.deploy.yml ps -q app)"
+              if [ -n "$app_container_id" ] && [ "$($docker_cmd inspect -f '{{.State.Health.Status}}' "$app_container_id")" = "healthy" ]; then
+                break
+              fi
+              sleep 5
+            done
+
+            if [ -z "$app_container_id" ] || [ "$($docker_cmd inspect -f '{{.State.Health.Status}}' "$app_container_id")" != "healthy" ]; then
+              echo "App did not become healthy within 120 seconds."
+              exit 1
+            fi
+
+            $docker_cmd image prune -f
