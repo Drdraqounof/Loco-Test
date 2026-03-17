@@ -1,52 +1,78 @@
 services:
+  # ── Loco App Container ───────────────────────────────────────────────────
+  # This runs the pre-built Loco image that GitHub Actions pushes to GHCR.
+  # The exact image tag comes from APP_IMAGE in .env.production on the EC2 box.
+  app:
+    image: ${APP_IMAGE}
+    container_name: loco_app
+
+    # Restart the app automatically after crashes or server reboots.
+    restart: always
+
+    ports:
+      # Expose the app on port 80 externally while Next.js still listens on 3000.
+      - "80:3000"
+
+    environment:
+      # Inside Docker, the app reaches Postgres by service name using db:5432.
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loco_user}:${POSTGRES_PASSWORD:-loco_password}@db:5432/${POSTGRES_DB:-loco_db}
+
+    # Load runtime secrets written by the deployment workflow on EC2.
+    env_file:
+      - .env.production
+
+    # Wait until Postgres is healthy before starting the app.
+    depends_on:
+      db:
+        condition: service_healthy
+
+    networks:
+      - loco_network
+
+    healthcheck:
+      # Mark the app healthy only when the local HTTP endpoint responds.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  # ── PostgreSQL Database ──────────────────────────────────────────────────
+  # This keeps the same Loco database architecture used in local Docker Compose.
   db:
     image: postgres:15
     container_name: loco_db
+
+    restart: always
+
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-loco_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loco_password}
       POSTGRES_DB: ${POSTGRES_DB:-loco_db}
+
     ports:
       - "5432:5432"
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+    networks:
+      - loco_network
+
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loco_user} -d ${POSTGRES_DB:-loco_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-    restart: always
-    networks:
-      - loco_network
-
-  app:
-    image: ${APP_IMAGE}
-    container_name: loco_app
-    ports:
-      - "80:3000"
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgresql://${POSTGRES_USER:-loco_user}:${POSTGRES_PASSWORD:-loco_password}@db:5432/${POSTGRES_DB:-loco_db}
-    env_file:
-      - .env.production
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 40s
-    restart: always
-    networks:
-      - loco_network
 
 volumes:
+  # Database storage managed by Docker on the EC2 server.
   postgres_data:
     driver: local
 
 networks:
+  # Shared bridge network so app can talk to db by service name.
   loco_network:
     driver: bridge
