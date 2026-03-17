@@ -1,0 +1,58 @@
+services:
+  # ── Loco App Container ───────────────────────────────────────────────────
+  # Local and CI builds use the Dockerfile directly instead of pulling from GHCR.
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: loco_app
+    restart: always
+    ports:
+      - "80:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-loco_user}:${POSTGRES_PASSWORD:-loco_password}@db:5432/${POSTGRES_DB:-loco_db}
+    env_file:
+      - .env.production
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - loco_network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  # ── PostgreSQL Database ──────────────────────────────────────────────────
+  # Local and CI runs keep the same Loco database topology as production.
+  db:
+    image: postgres:15
+    container_name: loco_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-loco_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loco_password}
+      POSTGRES_DB: ${POSTGRES_DB:-loco_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - loco_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loco_user} -d ${POSTGRES_DB:-loco_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  loco_network:
+    driver: bridge
