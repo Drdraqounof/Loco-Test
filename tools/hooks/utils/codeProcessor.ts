@@ -1,5 +1,7 @@
 // utils/codeProcessor.ts
 
+// In plain terms: this file helps format code, find code elements, and work with line numbers in AI answers.
+
 export function formatCodeWithLineNumbers(code: string): string {
   return code
     .split('\n')

@@ -2,6 +2,8 @@ import { google } from "googleapis";
 import { deleteRememberedCalendarEventsByGoogleIds, rememberCalendarEvent } from "@/lib/chatMemory";
 import { prisma } from "@/lib/prisma";
 
+// In plain terms: this file connects the app to Google Calendar for saving, reading, and deleting events.
+
 const GOOGLE_CALENDAR_SCOPES = [
   "openid",
   "email",

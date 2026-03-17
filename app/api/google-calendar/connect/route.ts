@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this route starts the Google Calendar sign-in flow.
 import {
   createOAuthClient,
   getGoogleCalendarScopes,

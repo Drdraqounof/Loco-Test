@@ -4,6 +4,8 @@
  * Play with full board, piece movement, and game state management
  */
 
+// In plain terms: this file contains the main chess game logic and interface for the experimental chess feature.
+
 'use client';
 
 import { useState, useEffect } from 'react';

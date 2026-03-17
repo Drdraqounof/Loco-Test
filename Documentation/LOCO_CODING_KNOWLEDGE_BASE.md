@@ -2,6 +2,8 @@
 
 > Last Updated: March 15, 2026 at 04:08 PM EDT
 
+> **In plain terms:** This is the rulebook for how Loco should write, review, and debug code in this workspace.
+
 ## Purpose
 
 This document defines the baseline coding standards Loco should follow when generating, editing, debugging, or reviewing software in this workspace.

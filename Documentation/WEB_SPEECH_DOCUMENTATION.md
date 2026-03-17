@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 8, 2026 at 11:35 PM
 
+> **In plain terms:** This doc explains how browser speech recognition works in the project and what its limits are.
+
 ## Overview
 The Web Speech API enables voice control in your browser. This documentation covers implementation, usage, and best practices.
 

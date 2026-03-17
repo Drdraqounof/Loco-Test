@@ -1,5 +1,7 @@
 "use client";
 
+// In plain terms: this component shows extracted commands and code in a terminal-style panel.
+
 import { useEffect, useRef, useState } from "react";
 
 interface TerminalCommand {

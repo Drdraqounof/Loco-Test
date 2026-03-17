@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { AttachmentContextItem } from '@/lib/attachmentContext';
 
+// In plain terms: this hook handles Electron-only features like desktop integrations that do not exist in the browser.
+
 interface ElectronAttachmentItem extends AttachmentContextItem {
   audioBase64?: string;
 }

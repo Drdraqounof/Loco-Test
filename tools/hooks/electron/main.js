@@ -1,5 +1,7 @@
 const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, dialog } = require('electron');
 const fs = require('fs').promises;
+
+// In plain terms: this is the main Electron process that creates windows, desktop shortcuts, and native app behavior.
 const os = require('os');
 const { spawn } = require('child_process');
 

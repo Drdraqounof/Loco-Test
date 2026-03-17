@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 9, 2026
 
+> **In plain terms:** This is the main overview for what Loco is, what it can do, and how the project is put together.
+
 Loco is your intelligent voice-enabled coding companion. Simply speak your coding questions, and Loco responds with both voice and written explanations, complete with executable code examples.
 
 ---

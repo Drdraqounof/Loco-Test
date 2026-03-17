@@ -1,5 +1,7 @@
 'use client';
 
+// In plain terms: this component handles copy-to-clipboard actions for the app.
+
 import { useState } from 'react';
 import { useElectron } from '@/tools/hooks/useElectron';
 

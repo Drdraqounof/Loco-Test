@@ -1,3 +1,5 @@
+// In plain terms: this file describes uploaded files and folders so the AI can use them as context.
+
 export type AttachmentKind = "file" | "folder";
 export type AttachmentCategory = "code" | "text" | "audio" | "image" | "video" | "document" | "binary" | "folder";
 

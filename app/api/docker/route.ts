@@ -7,6 +7,8 @@
 
 import { NextResponse } from 'next/server';
 
+
+// In plain terms: this route gives Docker setup help and environment information for the app.
 export async function GET() {
   const dockerGuide = {
     title: "🐳 Loco Docker Complete Guide",

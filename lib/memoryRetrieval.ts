@@ -1,3 +1,5 @@
+// In plain terms: this file scores and filters memory matches so the app can recall useful past information.
+
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "been", "before", "but", "by", "do", "for", "from",
   "had", "has", "have", "i", "if", "in", "into", "is", "it", "its", "me", "my", "of", "on", "or",

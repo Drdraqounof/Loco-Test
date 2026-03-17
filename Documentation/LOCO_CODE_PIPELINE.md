@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 11, 2026 at 3:42 PM
 
+> **In plain terms:** This doc explains how a coding request moves through Loco from the user's prompt to the final answer.
+
 ## 1. Purpose
 
 This document explains how Loco handles code-oriented requests from the moment a user sends a prompt to the moment the response is shown in the app preview panel.

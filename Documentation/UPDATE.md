@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 15, 2026 at 06:41 PM EDT
 
+> **In plain terms:** This is the running changelog for what was added, fixed, or improved over time.
+
 ## LATEST UPDATES - MARCH 15, 2026
 
 ### YOUTUBE MOVIE MATCHING + TYPO NORMALIZATION - MARCH 15, 2026 AT 06:41 PM EDT

@@ -1,5 +1,7 @@
 import * as React from "react";
 
+// In plain terms: this is the app's reusable button component with its shared styles and variants.
+
 type ButtonVariant = "default" | "ghost" | "glow" | "surface";
 type ButtonSize = "default" | "sm" | "icon";
 

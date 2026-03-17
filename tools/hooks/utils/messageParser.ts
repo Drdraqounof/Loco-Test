@@ -1,3 +1,5 @@
+// In plain terms: this file pulls useful pieces like code blocks and commands out of AI responses.
+
 export interface ParsedResponse {
   commands: string[];
   codeBlocks: Array<{

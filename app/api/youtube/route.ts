@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// In plain terms: this route handles YouTube search and playback-related requests.
+
 import { parseYouTubeSearchFilters, type YouTubeVideoSearchFilters } from "@/lib/youtube";
 import {
   deleteYouTubeConnection,

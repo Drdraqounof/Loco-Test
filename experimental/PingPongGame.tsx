@@ -1,5 +1,7 @@
 "use client";
 
+// In plain terms: this file contains the playable ping pong game used in the app's experimental area.
+
 import { useEffect, useRef, useState } from "react";
 
 interface PingPongGameProps {

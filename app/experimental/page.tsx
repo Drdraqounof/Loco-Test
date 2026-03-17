@@ -1,5 +1,7 @@
 'use client';
 
+// In plain terms: this page is the hub for trying out Loco's experimental features.
+
 import { useRouter } from 'next/navigation';
 
 export default function ExperimentalPage() {

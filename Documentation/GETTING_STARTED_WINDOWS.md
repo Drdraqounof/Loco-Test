@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 8, 2026 at 11:35 PM
 
+> **In plain terms:** This is the Windows setup guide for getting Loco running with Docker.
+
 This is a step-by-step guide for Windows users. If you're on Mac/Linux, see the bottom of this file.
 
 ---

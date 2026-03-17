@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Loco Docker Setup Script
+# In plain terms: this script helps set up the app so it can run inside Docker more easily.
 # Initializes the complete stack and lets the app container run migrations on startup
 
 set -e  # Exit on any error

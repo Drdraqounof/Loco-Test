@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 15, 2026 at 03:37 PM EDT
 
+> **In plain terms:** This doc helps you diagnose common setup, build, and runtime problems in the project.
+
 ## Build Issues
 
 ### `app/api/route.ts` "is not a module" During `next build`

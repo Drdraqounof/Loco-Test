@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this route starts the YouTube sign-in flow.
 import { createYouTubeOAuthClient, getYouTubeScopes } from "@/lib/youtubeOAuth";
 
 export async function GET(request: NextRequest) {

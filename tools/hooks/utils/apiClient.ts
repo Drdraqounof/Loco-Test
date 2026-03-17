@@ -1,5 +1,7 @@
 import type { AttachmentContextItem } from "@/lib/attachmentContext";
 
+// In plain terms: this file is the frontend's helper for calling app APIs and handling retries, timeouts, and workflow metadata.
+
 interface PreviewRuntimeIssue {
   message: string;
   source: string;

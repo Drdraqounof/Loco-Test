@@ -1,5 +1,9 @@
 "use client";
 
+// In plain terms: this is the settings screen for Loco.
+// It lets the user check integrations, change assistant and voice-related options,
+// and manage app behavior without touching code.
+
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {

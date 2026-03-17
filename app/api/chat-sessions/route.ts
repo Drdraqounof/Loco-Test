@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this route lists or clears saved chat sessions.
 import {
   deleteAllConversationSessions,
   PersistedChatMessageInput,

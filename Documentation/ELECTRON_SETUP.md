@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 9, 2026 at 1:14 PM
 
+> **In plain terms:** This doc explains how the desktop Electron version of Loco is set up and how it works.
+
 This project includes an Electron wrapper to run Loco as a cross-platform desktop app.
 
 ## What is Electron?

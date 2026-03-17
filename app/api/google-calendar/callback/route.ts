@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this route finishes Google Calendar sign-in and stores the user's calendar access tokens.
 import { google } from "googleapis";
 import {
   createOAuthClient,

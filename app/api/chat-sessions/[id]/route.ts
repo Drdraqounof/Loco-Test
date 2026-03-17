@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this route deletes one specific saved chat session.
 import { deleteConversationSession } from "@/lib/chatMemory";
 
 export async function DELETE(

@@ -1,3 +1,5 @@
+// In plain terms: this file helps Loco understand YouTube requests, playlist aliases, and search filters.
+
 export interface YouTubePlaylistAlias {
   id: string;
   name: string;

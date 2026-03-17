@@ -1,6 +1,8 @@
 // This is your Prisma schema file.
 // Learn more about it in the docs: https://pris.ly/d/prisma-schema
 
+// In plain terms: this file describes the app's database tables and relationships.
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -124,4 +126,92 @@ model AssistantMemory {
   updatedAt         DateTime @updatedAt
 
   @@index([source, updatedAt])
+}
+
+model WorkforceMember {
+  id          Int                  @id @default(autoincrement())
+  name        String
+  email       String?              @unique
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  assessments WorkforceAssessment[]
+
+  @@index([name])
+}
+
+model WorkforceArea {
+  id           Int                  @id @default(autoincrement())
+  code         String               @unique
+  title        String
+  description  String?              @db.Text
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  competencies WorkforceCompetency[]
+
+  @@index([code, title])
+}
+
+model WorkforceCompetency {
+  id           Int                    @id @default(autoincrement())
+  code         String                 @unique
+  title        String
+  itemType     String                 @default("skill")
+  question     String?                @db.Text
+  description  String?                @db.Text
+  sortOrder    Int                    @default(0)
+  areaId       Int?
+  parentId     Int?
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+  area         WorkforceArea?         @relation(fields: [areaId], references: [id], onDelete: SetNull)
+  parent       WorkforceCompetency?   @relation("WorkforceCompetencyTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     WorkforceCompetency[]  @relation("WorkforceCompetencyTree")
+  rubricLevels WorkforceRubricLevel[]
+  assessments  WorkforceAssessment[]
+
+  @@index([code, title])
+  @@index([areaId, itemType, sortOrder])
+  @@index([parentId, sortOrder])
+}
+
+model WorkforceRubricLevel {
+  id           Int                @id @default(autoincrement())
+  competencyId Int
+  score        Int
+  sortOrder    Int
+  summary      String             @db.Text
+  createdAt    DateTime           @default(now())
+  competency   WorkforceCompetency @relation(fields: [competencyId], references: [id], onDelete: Cascade)
+
+  @@unique([competencyId, score])
+  @@unique([competencyId, sortOrder])
+  @@index([competencyId, sortOrder])
+}
+
+model WorkforceAssessment {
+  id             Int                 @id @default(autoincrement())
+  memberId       Int
+  competencyId   Int
+  assessmentDate DateTime
+  selfScore      Int?
+  reflection     String?             @db.Text
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  member         WorkforceMember     @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  competency     WorkforceCompetency @relation(fields: [competencyId], references: [id], onDelete: Cascade)
+  evidenceLinks  WorkforceEvidenceLink[]
+
+  @@index([memberId, assessmentDate])
+  @@index([competencyId, assessmentDate])
+}
+
+model WorkforceEvidenceLink {
+  id           Int                 @id @default(autoincrement())
+  assessmentId Int
+  label        String?
+  url          String              @db.Text
+  createdAt    DateTime            @default(now())
+  assessment   WorkforceAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@index([assessmentId])
 }

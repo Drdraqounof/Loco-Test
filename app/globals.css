@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+/* In plain terms: this file holds the app's global styles, colors, layout rules, and visual defaults. */
+
 :root {
   --background: 240 10% 4%;
   --foreground: 0 0% 95%;

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this server route handles a public-facing AI request path.
 // import { 
 //   formatCodeWithLineNumbers, 
 //   findElements, 

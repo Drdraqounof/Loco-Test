@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { scoreMemoryRelevance } from "@/lib/memoryRetrieval";
 
+// In plain terms: this file stores and recalls long-term facts the assistant should remember.
+
 export interface RelevantAssistantMemoryMatch {
   content: string;
   kind: string;

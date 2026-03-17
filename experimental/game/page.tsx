@@ -1,5 +1,7 @@
 "use client";
 
+// In plain terms: this page opens the experimental game experience from the non-App-Router side of the project.
+
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 

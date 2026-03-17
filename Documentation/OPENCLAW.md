@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 9, 2026 at 2:02 PM
 
+> **In plain terms:** This doc explains why OpenClaw was explored, what it is for, and how it relates to Loco.
+
 ## Overview
 
 This document records why OpenClaw was added to the workflow, how it was installed on this machine, what it is useful for, and what remains to finish setup.

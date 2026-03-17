@@ -1,4 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this is the server-side brain for the main chat feature.
+// It receives user messages, pulls in memory and attachment context,
+// routes the request through the app's workflow, and returns the final AI response.
 import {
   formatCodeWithLineNumbers,
   findElements,

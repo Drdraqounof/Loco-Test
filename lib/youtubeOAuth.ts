@@ -1,6 +1,8 @@
 import { google } from "googleapis";
 import { prisma } from "@/lib/prisma";
 
+// In plain terms: this file handles YouTube sign-in and token storage for the app.
+
 const YOUTUBE_READONLY_SCOPES = [
   "openid",
   "email",

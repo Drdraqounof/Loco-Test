@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 
+// In plain terms: this file figures out whether the user is trying to create, confirm, or change a calendar event.
+
 const CALENDAR_NOUN_PATTERN = /\b(remind(?: me)?(?: to)?|reminder|alarm|appointment|meeting|event|calendar|call|lunch|dinner)\b|\b(on my calendar|to my calendar|in my calendar)\b/i;
 const CALENDAR_ACTION_WITH_CONTEXT_PATTERN = /\b(schedule|add|create|book|set[- ]?up|put|plan)\b/i;
 const CALENDAR_DATE_TIME_PATTERN = /\b(\d{1,2}\/\d{1,2}\/\d{2,4}|today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|weekend)|next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|around\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i;

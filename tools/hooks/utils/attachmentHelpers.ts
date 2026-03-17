@@ -1,3 +1,5 @@
+// In plain terms: this file turns uploaded files and folders into app-friendly attachment data.
+
 import {
   detectAttachmentCategory,
   isAudioAttachment,

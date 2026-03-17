@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+
+// In plain terms: this route reports Google Calendar connection status and lets the app manage that integration.
 import {
   deleteCalendarConnection,
   getStoredCalendarConnection,

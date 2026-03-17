@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { scoreMemoryRelevance, trimSnippet } from "@/lib/memoryRetrieval";
 
+// In plain terms: this file saves and retrieves conversation history and calendar memory for Loco.
+
 export interface RelevantConversationMatch {
   date: string;
   userText: string;

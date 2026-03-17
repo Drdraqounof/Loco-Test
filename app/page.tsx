@@ -1,5 +1,9 @@
 "use client";
 
+// In plain terms: this is the main Loco screen.
+// It handles the chat UI, user input, attachments, voice playback, message history,
+// and the front-end behavior for talking to the assistant.
+
 import { useState, useRef, useEffect, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";

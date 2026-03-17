@@ -1,5 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
+// In plain terms: this file creates the shared database connection used across the app.
+
 declare global {
   var prisma: PrismaClient | undefined;
 }

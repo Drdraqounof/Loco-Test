@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+// In plain terms: this hook controls audio playback for spoken responses.
+
 export function useAudioPlayer() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [audioData, setAudioData] = useState<string | null>(null);

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// In plain terms: this route turns uploaded audio into text so spoken requests can be used in the app.
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const STT_MODELS = (process.env.OPENAI_STT_MODELS || process.env.OPENAI_STT_MODEL || "gpt-4o-mini-transcribe,gpt-4o-transcribe,whisper-1")

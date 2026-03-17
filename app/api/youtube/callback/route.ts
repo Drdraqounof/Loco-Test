@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+
+// In plain terms: this route finishes YouTube sign-in and saves the returned account tokens.
 import { google } from "googleapis";
 import { createYouTubeOAuthClient, saveYouTubeConnection } from "@/lib/youtubeOAuth";
 

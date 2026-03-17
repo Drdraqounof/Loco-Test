@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 8, 2026 at 11:35 PM
 
+> **In plain terms:** This is the main Docker handbook for building, running, and troubleshooting Loco in containers.
+
 **All-in-one learning resource and reference for containerizing Loco**
 
 ---

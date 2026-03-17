@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+// In plain terms: this hook listens to the user's microphone and turns speech into text for the chat box.
+
 declare global {
   interface Window {
     webkitSpeechRecognition?: any;

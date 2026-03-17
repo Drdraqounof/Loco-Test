@@ -1,5 +1,7 @@
 export type VoiceKey = "alloy" | "echo" | "fable";
 
+// In plain terms: this file stores the voice theme names, colors, and styling settings used across the app.
+
 export interface VoiceTheme {
   bgGradient: string;
   orbHighlight: string;

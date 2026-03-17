@@ -2,6 +2,8 @@
 
 > **Last Updated:** March 9, 2026 at 1:14 PM
 
+> **In plain terms:** This doc is the big-picture product and architecture summary for Loco.
+
 ## 1. Product Definition
 
 **Loco** is a voice-enabled AI coding assistant that combines real-time speech synthesis, persistent chat memory, workspace preview tooling, and Google Calendar assistance into a single developer workflow.

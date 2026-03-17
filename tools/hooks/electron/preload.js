@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// In plain terms: this file safely exposes a small set of desktop features from Electron to the web app.
+
 console.log('=== Preload Script Loading ===');
 
 try {
