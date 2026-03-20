@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { deleteRememberedCalendarEventsByGoogleIds, rememberCalendarEvent } from "@/lib/chatMemory";
+import { isPersistenceUnavailableError } from "@/lib/persistence";
 import { prisma } from "@/lib/prisma";
 
 // In plain terms: this file connects the app to Google Calendar for saving, reading, and deleting events.
@@ -161,18 +162,26 @@ export async function createCalendarEvent(input: {
     },
   });
 
-  await rememberCalendarEvent({
-    googleEventId: event.data.id || null,
-    sessionId: input.sessionId ?? null,
-    title: input.title,
-    description: input.description,
-    location: input.location,
-    startIso: input.startIso,
-    endIso: input.endIso,
-    timeZone: input.timeZone,
-    htmlLink: event.data.htmlLink || null,
-    rawRequest: input.rawRequest ?? null,
-  });
+  try {
+    await rememberCalendarEvent({
+      googleEventId: event.data.id || null,
+      sessionId: input.sessionId ?? null,
+      title: input.title,
+      description: input.description,
+      location: input.location,
+      startIso: input.startIso,
+      endIso: input.endIso,
+      timeZone: input.timeZone,
+      htmlLink: event.data.htmlLink || null,
+      rawRequest: input.rawRequest ?? null,
+    });
+  } catch (error) {
+    if (isPersistenceUnavailableError(error)) {
+      console.warn("Calendar event memory persistence unavailable; event created without local memory.", error);
+    } else {
+      throw error;
+    }
+  }
 
   return event.data;
 }
@@ -264,7 +273,15 @@ export async function deleteCalendarEvents(input: {
     });
   }
 
-  await deleteRememberedCalendarEventsByGoogleIds(eventIds);
+  try {
+    await deleteRememberedCalendarEventsByGoogleIds(eventIds);
+  } catch (error) {
+    if (isPersistenceUnavailableError(error)) {
+      console.warn("Calendar event memory cleanup unavailable after Google delete.", error);
+    } else {
+      throw error;
+    }
+  }
 
   return {
     deletedCount: eventIds.length,

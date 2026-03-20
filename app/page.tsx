@@ -4,12 +4,12 @@
 // It handles the chat UI, user input, attachments, voice playback, message history,
 // and the front-end behavior for talking to the assistant.
 
-import { useState, useRef, useEffect, type ChangeEvent } from "react";
+import { useState, useRef, useEffect, type ChangeEvent, type InputHTMLAttributes } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
-import { Settings, Trash2, Mic, Send, X, Copy, Check, Undo2, Play, Pause, Volume2, History, Plus, MessageSquare, Maximize2, Minimize2 } from "lucide-react";
+import { Settings, Trash2, Mic, Send, X, Copy, Check, Undo2, Play, Pause, Volume2, History, Plus, MessageSquare, Maximize2, Minimize2, ExternalLink } from "lucide-react";
 import { useSpeechRecognition } from "@/tools/hooks/useSpeechRecognition";
 import { useAudioPlayer } from "@/tools/hooks/useAudioPlayer";
 import { useElectron } from "@/tools/hooks/useElectron";
@@ -96,6 +96,12 @@ interface ChatSession {
 
 interface ChatSessionsResponse {
   sessions: ChatSession[];
+  persistenceUnavailable?: boolean;
+}
+
+interface YouTubePlaybackMemoryResponse {
+  listens: RecentYouTubeListen[];
+  persistenceUnavailable?: boolean;
 }
 
 interface ChatSessionResponse {
@@ -111,6 +117,16 @@ interface HighlightToken {
   value: string;
   className: string;
 }
+
+type DirectoryPickerProps = InputHTMLAttributes<HTMLInputElement> & {
+  webkitdirectory?: string;
+  directory?: string;
+};
+
+const folderPickerProps: DirectoryPickerProps = {
+  webkitdirectory: "",
+  directory: "",
+};
 
 interface AttachmentPickerItem extends AttachmentContextItem {
   audioBase64?: string;
@@ -980,6 +996,11 @@ export default function Home() {
       }),
     });
 
+    if (response.status === 503) {
+      console.warn("Chat history persistence is unavailable; continuing without saving this session.");
+      return null;
+    }
+
     if (!response.ok) {
       throw new Error(`Failed to save chat session: ${response.status}`);
     }
@@ -990,6 +1011,23 @@ export default function Home() {
     return data.session;
   };
 
+  const persistRecentYouTubeListen = async (listen: RecentYouTubeListen) => {
+    const response = await fetch("/api/youtube-memory", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(listen),
+    });
+
+    if (response.status === 503) {
+      console.warn("YouTube playback memory persistence is unavailable; keeping the listen in local storage only.");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to save YouTube playback memory: ${response.status}`);
+    }
+  };
+
   const rememberRecentYouTubeListen = (requestQuery: string, video: YouTubeVideoChoice, variantLabel?: string) => {
     const nextListen: RecentYouTubeListen = {
       requestQuery,
@@ -997,6 +1035,10 @@ export default function Home() {
       variantLabel,
       playedAt: new Date().toISOString(),
     };
+
+    void persistRecentYouTubeListen(nextListen).catch((error) => {
+      console.error("Failed to persist remembered YouTube listen:", error);
+    });
 
     setRecentYouTubeListens((currentListens) => {
       const filteredListens = currentListens.filter((entry) => entry.video.id !== video.id);
@@ -1066,7 +1108,7 @@ export default function Home() {
 
     let data = (await response.json()) as ChatSessionsResponse;
 
-    if (data.sessions.length === 0) {
+    if (!data.persistenceUnavailable && data.sessions.length === 0) {
       const legacySessions = readLegacySessions();
       if (legacySessions.length > 0) {
         for (const legacySession of legacySessions) {
@@ -1086,6 +1128,33 @@ export default function Home() {
     updateActiveSessionId(null);
     setMessages([]);
     syncTerminalFromMessages([]);
+  };
+
+  const loadRememberedYouTubeListensFromServer = async () => {
+    const response = await fetch("/api/youtube-memory", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`Failed to load YouTube playback memories: ${response.status}`);
+    }
+
+    const data = (await response.json()) as YouTubePlaybackMemoryResponse;
+    if (data.persistenceUnavailable) {
+      return;
+    }
+
+    if (data.listens.length > 0) {
+      setRecentYouTubeListens(data.listens);
+      localStorage.setItem(YOUTUBE_RECENT_LISTENS_STORAGE_KEY, JSON.stringify(data.listens));
+      return;
+    }
+
+    const localListens = parseStoredRecentYouTubeListens(localStorage.getItem(YOUTUBE_RECENT_LISTENS_STORAGE_KEY));
+    if (localListens.length === 0) {
+      return;
+    }
+
+    for (const localListen of localListens) {
+      await persistRecentYouTubeListen(localListen);
+    }
   };
 
   const loadSession = (session: ChatSession) => {
@@ -1588,6 +1657,9 @@ export default function Home() {
     };
 
     syncYouTubeAliases();
+    void loadRememberedYouTubeListensFromServer().catch((error) => {
+      console.error("Failed to load remembered YouTube listens:", error);
+    });
     window.addEventListener("storage", syncYouTubeAliases);
 
     return () => {
@@ -1758,7 +1830,7 @@ export default function Home() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
          // Allow spacebar to trigger listening in overlay mode, even if window is not focused
-         const isOverlayMode = (window as any)?.locoOverlayMode || false;
+         const isOverlayMode = window.locoOverlayMode || false;
         if (
           e.code === "Space" &&
           (!inputRef.current?.matches(":focus") || isOverlayMode)
@@ -1778,7 +1850,7 @@ export default function Home() {
 
   // Electron overlay mode: Ctrl+Space global shortcut triggers listening via IPC
   useEffect(() => {
-    const api = (window as any)?.electronAPI;
+    const api = window.electronAPI;
     if (api?.onStartListening) {
       api.onStartListening(() => {
         if (!listening) toggleListening();
@@ -2242,6 +2314,21 @@ export default function Home() {
                 <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-primary">YouTube Now Playing</div>
                 <div className="mt-2 text-base font-semibold text-foreground">{youTubePlayer.title}</div>
                 <div className="mt-1 text-sm text-muted-foreground">{youTubePlayer.subtitle}</div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <a
+                    href={youTubePlayer.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-xl border border-border/60 bg-background/55 px-3 py-2 text-sm font-medium text-foreground transition-all hover:border-primary/30 hover:bg-background/80"
+                    title="Open this video directly on YouTube"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    Open in YouTube
+                  </a>
+                  <span className="text-xs text-muted-foreground">
+                    If the embed says video unavailable, open it directly on YouTube.
+                  </span>
+                </div>
               </div>
               <Button
                 variant="ghost"
@@ -2509,7 +2596,7 @@ export default function Home() {
               multiple
               className="hidden"
               onChange={handleBrowserFolderSelected}
-              {...({ webkitdirectory: "", directory: "" } as any)}
+              {...folderPickerProps}
             />
             <div className="max-w-3xl mx-auto space-y-3">
               {previewRuntimeIssue && (

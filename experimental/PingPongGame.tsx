@@ -41,7 +41,7 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
     let ballSpeedY = 4;
     let playerScore = 0;
     let aiScore = 0;
-    let gameActive = true;
+    const gameActive = true;
 
     const paddleOneX = 20;
     const paddleTwoX = 770;

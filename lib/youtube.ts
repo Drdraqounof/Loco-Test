@@ -84,6 +84,51 @@ function cleanupSearchValue(value: string) {
     .trim();
 }
 
+function resolveMediaHint(normalizedRequest: string) {
+  const orderedHints: Array<YouTubeVideoSearchFilters["mediaHint"]> = [
+    "remix",
+    "theme",
+    "ost",
+    "soundtrack",
+    "opening",
+    "ending",
+    "song",
+    "track",
+    "video",
+    "movie",
+    "film",
+    "clip",
+    "trailer",
+    "episode",
+  ];
+
+  return orderedHints.find((hint) => new RegExp(`\\b${hint}\\b`, "i").test(normalizedRequest));
+}
+
+function buildExactSearchPhrase(baseQuery: string, mediaHint?: YouTubeVideoSearchFilters["mediaHint"]) {
+  const normalizedBaseQuery = cleanupSearchValue(baseQuery);
+  if (!normalizedBaseQuery || !mediaHint) {
+    return normalizedBaseQuery || undefined;
+  }
+
+  const normalizedWithBoundaries = ` ${normalizeSearchText(normalizedBaseQuery)} `;
+  const hasHintAlready = new RegExp(`\\b${mediaHint}\\b`, "i").test(normalizedWithBoundaries);
+
+  if (mediaHint === "song" || mediaHint === "track") {
+    return normalizedBaseQuery;
+  }
+
+  if (hasHintAlready) {
+    return normalizedBaseQuery;
+  }
+
+  if (mediaHint === "remix") {
+    return `${normalizedBaseQuery} remix`.trim();
+  }
+
+  return `${normalizedBaseQuery} ${mediaHint}`.trim();
+}
+
 function normalizeMediaSubjectQuery(query: string, mediaHint?: YouTubeVideoSearchFilters["mediaHint"]) {
   const cleanedQuery = cleanupSearchValue(query);
 
@@ -295,8 +340,7 @@ function parseUploadedWindow(input: string) {
 export function parseYouTubeSearchFilters(rawRequest: string, query: string, newest = false): YouTubeVideoSearchFilters {
   const cleanedRawRequest = cleanupSearchValue(rawRequest || query);
   const normalizedRequest = normalizeSearchText(cleanedRawRequest);
-  const mediaHintMatch = normalizedRequest.match(/\b(song|track|video|movie|film|clip|trailer|episode|theme|ost|soundtrack|opening|ending|remix)\b/);
-  const mediaHint = mediaHintMatch?.[1] as YouTubeVideoSearchFilters["mediaHint"];
+  const mediaHint = resolveMediaHint(normalizedRequest);
   const myVideos = /\b(?:my videos|my uploads|my subscriptions|watch later|liked videos)\b/i.test(normalizedRequest);
   const live = /\bupcoming\b/i.test(normalizedRequest)
     ? "upcoming"
@@ -346,15 +390,10 @@ export function parseYouTubeSearchFilters(rawRequest: string, query: string, new
     rawRequest: cleanedRawRequest,
     normalizedRequest,
     searchQuery: workingQuery || normalizeMediaSubjectQuery(query, mediaHint) || cleanedRawRequest,
-    exactSearchPhrase: mediaHint
-      ? (
-        mediaHint === "song" || mediaHint === "track"
-          ? (workingQuery || normalizeMediaSubjectQuery(query, mediaHint) || cleanedRawRequest).trim()
-          : mediaHint === "remix"
-            ? `${workingQuery || normalizeMediaSubjectQuery(query, mediaHint) || cleanedRawRequest} remix`.trim()
-            : `${workingQuery || normalizeMediaSubjectQuery(query, mediaHint) || cleanedRawRequest} ${mediaHint}`.trim()
-      )
-      : undefined,
+    exactSearchPhrase: buildExactSearchPhrase(
+      workingQuery || normalizeMediaSubjectQuery(query, mediaHint) || cleanedRawRequest,
+      mediaHint,
+    ),
     keywords: tokenizeSearchTerms(workingQuery || normalizeMediaSubjectQuery(query, mediaHint) || cleanedRawRequest),
     artist,
     author: explicitAuthor || undefined,

@@ -1,4 +1,7 @@
+import { existsSync, readFileSync } from "node:fs";
+
 import { NextRequest, NextResponse } from "next/server";
+import { Agent, type Dispatcher } from "undici";
 
 // In plain terms: this is the server-side brain for the main chat feature.
 // It receives user messages, pulls in memory and attachment context,
@@ -26,12 +29,14 @@ import {
   buildPersistentMemoryContext,
   buildRelevantConversationContext,
   type RelevantConversationMatch,
+  type RelevantConversationResult,
   listRememberedCalendarEvents,
 } from "@/lib/chatMemory";
 import {
   buildAssistantMemoryContext,
   buildRelevantAssistantMemoryContext,
   type RelevantAssistantMemoryMatch,
+  type RelevantAssistantMemoryResult,
   extractMemoryContent,
   formatAssistantMemoryRecall,
   inferImplicitMemoryCandidate,
@@ -49,12 +54,17 @@ import {
   buildAttachmentPromptContext,
   type AttachmentContextItem,
 } from "@/lib/attachmentContext";
+import { isPersistenceUnavailableError } from "@/lib/persistence";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const AI_PROVIDER = process.env.AI_PROVIDER || "openai";
 const TTS_PROVIDER = process.env.TTS_PROVIDER || "openai";
 const LIVE_CALENDAR_DELETE_MARKER = "Google Calendar delete confirmation ready.";
+const OPENAI_CA_CERT_PATH = process.env.OPENAI_CA_CERT_PATH;
+const OPENAI_ALLOW_INSECURE_TLS = process.env.OPENAI_ALLOW_INSECURE_TLS === "true";
+
+let openAIDispatcher: Dispatcher | null | undefined;
 
 const RESOURCES = {
   javascript: [
@@ -126,6 +136,88 @@ interface PipelineReviewResult {
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 const OPENAI_DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
+function isTlsCertificateError(error: unknown) {
+  const candidate = error as { code?: string; cause?: { code?: string } } | null;
+  const code = candidate?.code || candidate?.cause?.code;
+  return code === "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" || code === "SELF_SIGNED_CERT_IN_CHAIN" || code === "DEPTH_ZERO_SELF_SIGNED_CERT";
+}
+
+function getOpenAIDispatcher() {
+  if (openAIDispatcher !== undefined) {
+    return openAIDispatcher;
+  }
+
+  if (OPENAI_CA_CERT_PATH) {
+    if (!existsSync(OPENAI_CA_CERT_PATH)) {
+      throw new Error(`OPENAI_CA_CERT_PATH does not exist: ${OPENAI_CA_CERT_PATH}`);
+    }
+
+    openAIDispatcher = new Agent({
+      connect: {
+        ca: readFileSync(OPENAI_CA_CERT_PATH, "utf8"),
+      },
+    });
+    return openAIDispatcher;
+  }
+
+  if (OPENAI_ALLOW_INSECURE_TLS && process.env.NODE_ENV !== "production") {
+    openAIDispatcher = new Agent({
+      connect: {
+        rejectUnauthorized: false,
+      },
+    });
+    return openAIDispatcher;
+  }
+
+  openAIDispatcher = null;
+  return openAIDispatcher;
+}
+
+async function fetchOpenAI(url: string, init: RequestInit) {
+  try {
+    const dispatcher = getOpenAIDispatcher();
+    if (!dispatcher) {
+      return await fetch(url, init);
+    }
+
+    return await fetch(url, {
+      ...init,
+      dispatcher,
+    } as RequestInit & { dispatcher: Dispatcher });
+  } catch (error) {
+    if (isTlsCertificateError(error)) {
+      throw new Error(
+        "OpenAI TLS validation failed. Configure NODE_EXTRA_CA_CERTS before starting the dev server, or set OPENAI_CA_CERT_PATH to a PEM file for your local root certificate."
+      );
+    }
+
+    throw error;
+  }
+}
+
+async function withOptionalPersistence<T>(
+  label: string,
+  action: () => Promise<T>,
+  fallback: T
+): Promise<{ value: T; available: boolean }> {
+  try {
+    return {
+      value: await action(),
+      available: true,
+    };
+  } catch (error) {
+    if (isPersistenceUnavailableError(error)) {
+      console.warn(`${label} unavailable; continuing without persistence.`, error);
+      return {
+        value: fallback,
+        available: false,
+      };
+    }
+
+    throw error;
+  }
+}
+
 function normalizeModelOutput(content: unknown) {
   if (typeof content === "string") {
     return content.trim();
@@ -152,7 +244,7 @@ function normalizeModelOutput(content: unknown) {
 }
 
 async function callOpenAIChat(messages: Message[], options: OpenAIChatOptions = {}) {
-  const response = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
+  const response = await fetchOpenAI(OPENAI_CHAT_COMPLETIONS_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -706,9 +798,15 @@ export async function POST(request: NextRequest) {
     }
 
     if (looksLikeMemoryRecallQuestion(latestUserMessage)) {
+      const memoryRecall = await withOptionalPersistence(
+        "Assistant memory recall",
+        () => formatAssistantMemoryRecall(),
+        "I can't access saved memories right now because chat persistence is unavailable."
+      );
+
       return NextResponse.json({
         success: true,
-        message: await formatAssistantMemoryRecall(),
+        message: memoryRecall.value,
         audio: null,
       });
     }
@@ -724,11 +822,20 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      await rememberAssistantFact(memoryContent, "explicit");
+      const memorySave = await withOptionalPersistence(
+        "Assistant memory save",
+        async () => {
+          await rememberAssistantFact(memoryContent, "explicit");
+          return true;
+        },
+        false
+      );
 
       return NextResponse.json({
         success: true,
-        message: `I'll remember that: ${memoryContent}`,
+        message: memorySave.value
+          ? `I'll remember that: ${memoryContent}`
+          : `I heard that, but I can't save memories right now because chat persistence is unavailable.`,
         audio: null,
       });
     }
@@ -747,8 +854,20 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const connection = await getStoredCalendarConnection();
-      if (!connection) {
+      const connection = await withOptionalPersistence(
+        "Google Calendar connection lookup",
+        () => getStoredCalendarConnection(),
+        null
+      );
+      if (!connection.available) {
+        return NextResponse.json({
+          success: true,
+          message: "I can't access the saved Google Calendar connection right now because chat persistence is unavailable.",
+          audio: null,
+        });
+      }
+
+      if (!connection.value) {
         return NextResponse.json({
           success: true,
           message: "Google Calendar is not connected yet. Open Settings, connect your Google account, then ask me again.",
@@ -806,8 +925,20 @@ export async function POST(request: NextRequest) {
     const isReplyDraftRequest = looksLikeReplyDraftRequest(latestUserMessage);
 
     if (!isReplyDraftRequest && (looksLikeLiveCalendarDeleteRequest(latestUserMessage) || looksLikeLiveCalendarReadRequest(latestUserMessage))) {
-      const connection = await getStoredCalendarConnection();
-      if (!connection) {
+      const connection = await withOptionalPersistence(
+        "Google Calendar connection lookup",
+        () => getStoredCalendarConnection(),
+        null
+      );
+      if (!connection.available) {
+        return NextResponse.json({
+          success: true,
+          message: "I can't access the saved Google Calendar connection right now because chat persistence is unavailable.",
+          audio: null,
+        });
+      }
+
+      if (!connection.value) {
         return NextResponse.json({
           success: true,
           message: "I can do that with Google Calendar, but Google Calendar is not connected yet. Open Settings, connect your Google account, then ask me again.",
@@ -866,11 +997,23 @@ export async function POST(request: NextRequest) {
     }
 
     if (!isReplyDraftRequest && looksLikeCalendarMemoryQuestion(latestUserMessage)) {
-      const rememberedEvents = await listRememberedCalendarEvents(8);
+      const rememberedEvents = await withOptionalPersistence(
+        "Remembered calendar events lookup",
+        () => listRememberedCalendarEvents(8),
+        []
+      );
+
+      if (!rememberedEvents.available) {
+        return NextResponse.json({
+          success: true,
+          message: "I can't access remembered calendar history right now because chat persistence is unavailable.",
+          audio: null,
+        });
+      }
 
       return NextResponse.json({
         success: true,
-        message: formatRememberedEventsMessage(rememberedEvents),
+        message: formatRememberedEventsMessage(rememberedEvents.value),
         audio: null,
       });
     }
@@ -879,9 +1022,21 @@ export async function POST(request: NextRequest) {
       previousAssistantAskedToConfirm(messages) &&
       isCalendarConfirmationReply(latestUserMessage)
     ) {
-      const pendingDraft = await getLatestPendingDraft();
+      const pendingDraft = await withOptionalPersistence(
+        "Pending calendar draft lookup",
+        () => getLatestPendingDraft(),
+        null
+      );
 
-      if (!pendingDraft) {
+      if (!pendingDraft.available) {
+        return NextResponse.json({
+          success: true,
+          message: "I can't access pending Google Calendar drafts right now because chat persistence is unavailable.",
+          audio: null,
+        });
+      }
+
+      if (!pendingDraft.value) {
         return NextResponse.json({
           success: true,
           message: "I don't have a pending calendar draft right now. Ask me to schedule the event again and I'll prepare it.",
@@ -889,28 +1044,34 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      const draft = pendingDraft.value;
+
       try {
         const createdEvent = await createCalendarEvent({
-          title: pendingDraft.title,
-          description: pendingDraft.description,
-          location: pendingDraft.location,
-          startIso: pendingDraft.startIso.toISOString(),
-          endIso: pendingDraft.endIso.toISOString(),
-          timeZone: pendingDraft.timeZone,
+          title: draft.title,
+          description: draft.description,
+          location: draft.location,
+          startIso: draft.startIso.toISOString(),
+          endIso: draft.endIso.toISOString(),
+          timeZone: draft.timeZone,
           origin: request.nextUrl.origin,
-          rawRequest: pendingDraft.rawRequest,
+          rawRequest: draft.rawRequest,
           sessionId: typeof sessionId === "string" ? sessionId : null,
         });
 
-        await clearPendingDraft(pendingDraft.id);
+        await withOptionalPersistence(
+          "Pending calendar draft cleanup",
+          () => clearPendingDraft(draft.id),
+          null
+        );
 
         return NextResponse.json({
           success: true,
           message: formatEventSuccessMessage({
-            title: pendingDraft.title,
-            startIso: pendingDraft.startIso,
-            endIso: pendingDraft.endIso,
-            timeZone: pendingDraft.timeZone,
+            title: draft.title,
+            startIso: draft.startIso,
+            endIso: draft.endIso,
+            timeZone: draft.timeZone,
             htmlLink: createdEvent.htmlLink,
           }),
           audio: null,
@@ -929,9 +1090,18 @@ export async function POST(request: NextRequest) {
       previousAssistantAskedToConfirm(messages) &&
       isCancellationReply(latestUserMessage)
     ) {
-      const pendingDraft = await getLatestPendingDraft();
-      if (pendingDraft) {
-        await clearPendingDraft(pendingDraft.id);
+      const pendingDraft = await withOptionalPersistence(
+        "Pending calendar draft lookup",
+        () => getLatestPendingDraft(),
+        null
+      );
+      if (pendingDraft.available && pendingDraft.value) {
+        const draft = pendingDraft.value;
+        await withOptionalPersistence(
+          "Pending calendar draft cleanup",
+          () => clearPendingDraft(draft.id),
+          null
+        );
       }
 
       return NextResponse.json({
@@ -955,9 +1125,21 @@ export async function POST(request: NextRequest) {
       looksLikeCalendarClarificationFollowUp(latestUserMessage);
 
     if ((!isReplyDraftRequest && looksLikeCalendarIntent(latestUserMessage)) || isCalendarClarificationFollowUp) {
-      const connection = await getStoredCalendarConnection();
+      const connection = await withOptionalPersistence(
+        "Google Calendar connection lookup",
+        () => getStoredCalendarConnection(),
+        null
+      );
 
-      if (!connection) {
+      if (!connection.available) {
+        return NextResponse.json({
+          success: true,
+          message: "I can't access the saved Google Calendar connection right now because chat persistence is unavailable.",
+          audio: null,
+        });
+      }
+
+      if (!connection.value) {
         return NextResponse.json({
           success: true,
           message:
@@ -992,8 +1174,10 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        const startDate = new Date(parsedIntent.event.startIso);
-        const endDate = new Date(parsedIntent.event.endIso);
+        const event = parsedIntent.event;
+
+        const startDate = new Date(event.startIso);
+        const endDate = new Date(event.endIso);
 
         if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) {
           return NextResponse.json({
@@ -1004,23 +1188,35 @@ export async function POST(request: NextRequest) {
         }
 
         const eventTitle =
-          typeof parsedIntent.event.title === "string" && parsedIntent.event.title.trim().length > 0 && parsedIntent.event.title.trim().toLowerCase() !== "reminder"
-            ? parsedIntent.event.title.trim()
+          typeof event.title === "string" && event.title.trim().length > 0 && event.title.trim().toLowerCase() !== "reminder"
+            ? event.title.trim()
             : fallbackCalendarTitleFromRequest(latestUserMessage);
 
-        const draft = await savePendingDraft({
-          title: eventTitle,
-          description: parsedIntent.event.description,
-          location: parsedIntent.event.location,
-          startIso: parsedIntent.event.startIso,
-          endIso: parsedIntent.event.endIso,
-          timeZone: parsedIntent.event.timeZone || timeZone,
-          rawRequest: latestUserMessage,
-        });
+        const draft = await withOptionalPersistence(
+          "Pending calendar draft save",
+          () => savePendingDraft({
+            title: eventTitle,
+            description: event.description,
+            location: event.location,
+            startIso: event.startIso,
+            endIso: event.endIso,
+            timeZone: event.timeZone || timeZone,
+            rawRequest: latestUserMessage,
+          }),
+          null
+        );
+
+        if (!draft.available || !draft.value) {
+          return NextResponse.json({
+            success: true,
+            message: "I parsed the event details, but I can't save a pending Google Calendar draft right now because chat persistence is unavailable.",
+            audio: null,
+          });
+        }
 
         return NextResponse.json({
           success: true,
-          message: formatDraftConfirmation(draft),
+          message: formatDraftConfirmation(draft.value),
           audio: null,
         });
       } catch (error) {
@@ -1035,18 +1231,30 @@ export async function POST(request: NextRequest) {
 
     const implicitMemoryCandidate = inferImplicitMemoryCandidate(latestUserMessage);
     if (implicitMemoryCandidate) {
-      await rememberAssistantFact(implicitMemoryCandidate, "implicit");
+      await withOptionalPersistence(
+        "Implicit assistant memory save",
+        () => rememberAssistantFact(implicitMemoryCandidate, "implicit"),
+        null
+      );
     }
 
     let audioBase64 = null;
     const [previousContext, longTermMemoryContext, relevantAssistantMemoryResult, relevantConversationResult] = await Promise.all([
-      buildPersistentMemoryContext(),
-      buildAssistantMemoryContext(),
-      buildRelevantAssistantMemoryContext(latestUserMessage),
-      buildRelevantConversationContext(latestUserMessage),
+      withOptionalPersistence("Persistent conversation context", () => buildPersistentMemoryContext(), ""),
+      withOptionalPersistence("Assistant memory context", () => buildAssistantMemoryContext(), ""),
+      withOptionalPersistence(
+        "Relevant assistant memory context",
+        () => buildRelevantAssistantMemoryContext(latestUserMessage),
+        { context: "", matches: [] } satisfies RelevantAssistantMemoryResult
+      ),
+      withOptionalPersistence(
+        "Relevant conversation context",
+        () => buildRelevantConversationContext(latestUserMessage),
+        { context: "", matches: [] } satisfies RelevantConversationResult
+      ),
     ]);
-    const relevantAssistantMemoryContext = relevantAssistantMemoryResult.context;
-    const relevantConversationContext = relevantConversationResult.context;
+    const relevantAssistantMemoryContext = relevantAssistantMemoryResult.value.context;
+    const relevantConversationContext = relevantConversationResult.value.context;
     const memorySources = [
       relevantAssistantMemoryContext ? "remembered facts" : null,
       relevantConversationContext ? "prior conversation" : null,
@@ -1056,8 +1264,8 @@ export async function POST(request: NextRequest) {
       assistantMemories: RelevantAssistantMemoryMatch[];
       conversationMatches: RelevantConversationMatch[];
     } = {
-      assistantMemories: relevantAssistantMemoryResult.matches,
-      conversationMatches: relevantConversationResult.matches,
+      assistantMemories: relevantAssistantMemoryResult.value.matches,
+      conversationMatches: relevantConversationResult.value.matches,
     };
 
     let codeSummary = "";
@@ -1095,9 +1303,9 @@ ${previewRuntimeIssue.message.trim()}`
 
     if (user && user.firstName) {
       userGreeting = ` Greetings, sir. `;
-      userContext = `\nSTUDENT PROFILE:\n- Name: ${user.firstName} ${user.lastName || ""}\n- Email: ${user.email}\n- You're working with them as their personal coding mentor${previousContext}${longTermMemoryContext}${relevantAssistantMemoryContext}${relevantConversationContext}`;
+      userContext = `\nSTUDENT PROFILE:\n- Name: ${user.firstName} ${user.lastName || ""}\n- Email: ${user.email}\n- You're working with them as their personal coding mentor${previousContext.value}${longTermMemoryContext.value}${relevantAssistantMemoryContext}${relevantConversationContext}`;
     } else {
-      userContext = `${previousContext}${longTermMemoryContext}${relevantAssistantMemoryContext}${relevantConversationContext}`;
+      userContext = `${previousContext.value}${longTermMemoryContext.value}${relevantAssistantMemoryContext}${relevantConversationContext}`;
     }
 
     const systemPrompt = `You are Loco, an intelligent, calm, and highly capable AI assistant — modelled after JARVIS — who helps users with everyday needs while also teaching programming, debugging code, and helping build software.
@@ -1450,7 +1658,7 @@ Instructions:
             }
           }
         } else {
-          const ttsResponse = await fetch("https://api.openai.com/v1/audio/speech", {
+          const ttsResponse = await fetchOpenAI("https://api.openai.com/v1/audio/speech", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -1504,6 +1712,14 @@ Instructions:
     });
   } catch (error) {
     console.error("Chat API error:", error);
+
+    if (error instanceof Error && error.message.startsWith("OpenAI TLS validation failed")) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: 502 }
+      );
+    }
+
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

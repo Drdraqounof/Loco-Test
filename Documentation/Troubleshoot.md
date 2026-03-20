@@ -1,10 +1,35 @@
 # Troubleshooting Guide
 
-> **Last Updated:** March 15, 2026 at 03:37 PM EDT
+> **Last Updated:** March 20, 2026 at 12:00 PM EDT
 
 > **In plain terms:** This doc helps you diagnose common setup, build, and runtime problems in the project.
 
 ## Build Issues
+
+### `Module not found: Can't resolve 'undici'` During `next build` or `npm run dev`
+
+**Problem**: The app fails early in the build with an error similar to:
+
+```text
+./app/api/route.ts:4:1
+Module not found: Can't resolve 'undici'
+import { Agent, type Dispatcher } from "undici";
+```
+
+**Cause**:
+1. The server route depends on `undici` for the custom OpenAI dispatcher logic
+2. Your local `node_modules` can be out of date after pulling changes
+3. The app package under `my-app` must have its own dependencies installed, even if the repo root also has a `package.json`
+
+**Solutions**:
+1. Open a terminal in `my-app`
+2. Run `npm install`
+3. Restart the dev server with `npm run dev`
+4. If the error persists, delete `my-app/node_modules` and `my-app/package-lock.json`, then run `npm install` again
+
+**Notes**:
+1. Installing packages at the repo root does not fix missing dependencies inside `my-app`
+2. Once `undici` is installed correctly, the next build failure may reveal a different TypeScript or syntax issue further down the pipeline, so rerun `npm run build` after each fix
 
 ### `app/api/route.ts` "is not a module" During `next build`
 

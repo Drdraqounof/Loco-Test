@@ -86,7 +86,12 @@ export async function rememberAssistantFact(content: string, kind = "fact") {
 
 export async function listAssistantMemories(limit = 12) {
   return prisma.assistantMemory.findMany({
-    where: { source: "loco" },
+    where: {
+      source: "loco",
+      kind: {
+        not: "youtube-playback",
+      },
+    },
     orderBy: { updatedAt: "desc" },
     take: limit,
   });
@@ -94,7 +99,12 @@ export async function listAssistantMemories(limit = 12) {
 
 export async function listRelevantAssistantMemories(query: string, limit = 4) {
   const memories = await prisma.assistantMemory.findMany({
-    where: { source: "loco" },
+    where: {
+      source: "loco",
+      kind: {
+        not: "youtube-playback",
+      },
+    },
     orderBy: { updatedAt: "desc" },
     take: 60,
   });

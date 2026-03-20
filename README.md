@@ -1,6 +1,6 @@
 # 🎯 Loco - AI Voice Coding Assistant
 
-> **Last Updated:** March 9, 2026
+> **Last Updated:** March 20, 2026
 
 > **In plain terms:** This is the main overview for what Loco is, what it can do, and how the project is put together.
 
@@ -97,6 +97,8 @@ cp .env.example .env
 # Development (hot reload)
 npm run dev
 ```
+
+If you pull recent changes and see a build error such as `Module not found: Can't resolve 'undici'`, run `npm install` again in `my-app` to refresh runtime dependencies before starting the app.
 
 Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
 

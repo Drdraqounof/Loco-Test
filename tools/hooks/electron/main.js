@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, globalShortcut, ipcMain, screen, session, dialog } = require('electron');
 const fs = require('fs').promises;
 
@@ -614,7 +615,7 @@ ipcMain.handle('screen:read', async () => {
   try {
     // Electron does not natively read screen text, but can access clipboard
     screenText = clipboard.readText();
-  } catch (error) {
+  } catch {
     screenText = '';
   }
   return screenText;

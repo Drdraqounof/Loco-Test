@@ -2,10 +2,49 @@ import { useEffect, useRef, useState } from "react";
 
 // In plain terms: this hook listens to the user's microphone and turns speech into text for the chat box.
 
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+}
+
+interface SpeechRecognitionResultLike {
+  0: SpeechRecognitionAlternativeLike;
+  isFinal: boolean;
+}
+
+interface SpeechRecognitionResultListLike {
+  length: number;
+  [index: number]: SpeechRecognitionResultLike;
+}
+
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: SpeechRecognitionResultListLike;
+}
+
+interface SpeechRecognitionErrorEventLike {
+  error: string;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+interface SpeechRecognitionConstructorLike {
+  new (): SpeechRecognitionLike;
+}
+
 declare global {
   interface Window {
-    webkitSpeechRecognition?: any;
-    SpeechRecognition?: any;
+    webkitSpeechRecognition?: SpeechRecognitionConstructorLike;
+    SpeechRecognition?: SpeechRecognitionConstructorLike;
   }
 }
 
@@ -15,13 +54,21 @@ export interface UseSpeechRecognitionOptions {
 
 export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) {
   const { lang = "en-US" } = options;
+  const isSecureSpeechContext = () => {
+    if (typeof window === "undefined") {
+      return true;
+    }
+
+    const { hostname, protocol } = window.location;
+    return window.isSecureContext || protocol === "https:" || hostname === "localhost" || hostname === "127.0.0.1";
+  };
   
   const [listening, setListening] = useState(false);
   const [label, setLabel] = useState("tap to speak");
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [speechSupported, setSpeechSupported] = useState(true);
   
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const isRecognitionRunningRef = useRef(false);
   const transcriptRef = useRef<string>("");
   const speechErrorRef = useRef<string | null>(null);
@@ -63,7 +110,7 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
       transcriptRef.current = "";
     };
 
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEventLike) => {
       speechErrorRef.current = null;
       setSpeechError(null);
 
@@ -92,7 +139,7 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
       }
     };
 
-    recognition.onerror = (event: any) => {
+    recognition.onerror = (event: SpeechRecognitionErrorEventLike) => {
       const silentErrors = ["no-speech", "aborted", "network"];
       if (!silentErrors.includes(event.error)) {
         console.error("Speech recognition error", event.error);
@@ -105,8 +152,8 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
         "no-speech": "no speech detected - try again",
         "audio-capture": "no microphone access",
         network: "no network connection",
-        "not-allowed": "microphone permission denied",
-        "service-not-allowed": "speech service disabled",
+        "not-allowed": isSecureSpeechContext() ? "microphone permission denied" : "microphone needs HTTPS or localhost",
+        "service-not-allowed": isSecureSpeechContext() ? "speech service disabled" : "speech service needs HTTPS or localhost",
         "bad-grammar": "couldn't understand - try again",
         aborted: "recording stopped",
       };
@@ -214,6 +261,13 @@ export function useSpeechRecognition(options: UseSpeechRecognitionOptions = {}) 
 
     if (isElectron()) {
       startElectronListening();
+      return;
+    }
+
+    if (!isSecureSpeechContext()) {
+      speechErrorRef.current = "not-allowed";
+      setSpeechError("not-allowed");
+      setLabel("microphone needs HTTPS or localhost");
       return;
     }
 

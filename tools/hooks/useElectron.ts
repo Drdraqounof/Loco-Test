@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { AttachmentContextItem } from '@/lib/attachmentContext';
 
 // In plain terms: this hook handles Electron-only features like desktop integrations that do not exist in the browser.
@@ -7,7 +7,7 @@ interface ElectronAttachmentItem extends AttachmentContextItem {
   audioBase64?: string;
 }
 
-interface ElectronAPI {
+export interface ElectronAPI {
   clipboard: {
     read: () => Promise<string>;
     write: (text: string) => Promise<void>;
@@ -27,20 +27,18 @@ interface ElectronAPI {
     status: (voice: string) => Promise<{ available: boolean; reason?: string | null; executable?: string; model?: string }>;
   };
   platform: string;
+  onStartListening?: (callback: () => void) => void;
 }
 
 declare global {
   interface Window {
     electronAPI?: ElectronAPI;
+    locoOverlayMode?: boolean;
   }
 }
 
 export function useElectron() {
-  const [isElectron, setIsElectron] = useState(false);
-
-  useEffect(() => {
-    setIsElectron(typeof window !== 'undefined' && !!window.electronAPI);
-  }, []);
+  const [isElectron] = useState(() => typeof window !== 'undefined' && !!window.electronAPI);
 
   return {
     isElectron,

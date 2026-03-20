@@ -14,17 +14,31 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
 
 interface YouTubeSearchItem {
   id?: {
-    videoId?: string;
+    videoId?: string | null;
   };
   snippet?: {
-    title?: string;
-    channelTitle?: string;
-    description?: string;
-    publishedAt?: string;
-    liveBroadcastContent?: string;
+    title?: string | null;
+    channelTitle?: string | null;
+    description?: string | null;
+    publishedAt?: string | null;
+    liveBroadcastContent?: string | null;
   };
   statistics?: {
-    viewCount?: string;
+    viewCount?: string | null;
+  };
+}
+
+interface YouTubePlaylistItem {
+  contentDetails?: {
+    videoId?: string | null;
+    videoPublishedAt?: string | null;
+  };
+  snippet?: {
+    title?: string | null;
+    videoOwnerChannelTitle?: string | null;
+    channelTitle?: string | null;
+    description?: string | null;
+    publishedAt?: string | null;
   };
 }
 
@@ -129,7 +143,7 @@ function extractPersonalLibrarySearchQuery(rawRequest: string) {
     .trim();
 }
 
-function toPlaylistVideoItem(item: any): YouTubeSearchItem | null {
+function toPlaylistVideoItem(item: YouTubePlaylistItem): YouTubeSearchItem | null {
   const videoId = item?.contentDetails?.videoId;
   const title = item?.snippet?.title;
 
@@ -334,7 +348,7 @@ function toVideoResponse(candidate: YouTubeSearchItem) {
   };
 }
 
-function normalizeText(value: string | undefined) {
+function normalizeText(value: string | null | undefined) {
   return (value || "")
     .toLowerCase()
     .replace(/[^a-z0-9\s'-]/g, " ")
@@ -417,7 +431,7 @@ function getOrderedTokenMatchCount(haystack: string, needle: string) {
   return matchedCount;
 }
 
-function scoreRecency(publishedAt: string | undefined) {
+function scoreRecency(publishedAt: string | null | undefined) {
   if (!publishedAt) {
     return 0;
   }

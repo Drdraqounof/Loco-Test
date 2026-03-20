@@ -2,7 +2,7 @@
 
 // In plain terms: this component shows extracted commands and code in a terminal-style panel.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 interface TerminalCommand {
   id: string;
@@ -16,7 +16,12 @@ interface CommandTerminalProps {
   isOpen: boolean;
   onClose: () => void;
   commands: string[];
-  theme: any;
+  theme: {
+    borderColor: string;
+    textColor: string;
+    accentColor: string;
+    buttonBg: string;
+  };
   language?: string;
 }
 
@@ -48,6 +53,31 @@ export default function CommandTerminal({
   }, [commands, isOpen]);
 
   // Auto-scroll to latest output
+
+  const executeAllCommands = useEffectEvent(async () => {
+    for (let i = 0; i < terminalCommands.length; i++) {
+      const cmd = terminalCommands[i];
+
+      setTerminalCommands((prev) => [
+        ...prev.slice(0, i),
+        { ...cmd, status: "running" },
+        ...prev.slice(i + 1),
+      ]);
+
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      setTerminalCommands((prev) => [
+        ...prev.slice(0, i),
+        {
+          ...cmd,
+          status: "success",
+          output: "Command executed successfully",
+        },
+        ...prev.slice(i + 1),
+      ]);
+    }
+  });
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -80,35 +110,6 @@ export default function CommandTerminal({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isOpen, onClose]);
-
-  const executeAllCommands = async () => {
-    for (let i = 0; i < terminalCommands.length; i++) {
-      setExecutingIndex(i);
-      const cmd = terminalCommands[i];
-
-      // Mark as running
-      setTerminalCommands((prev) => [
-        ...prev.slice(0, i),
-        { ...cmd, status: "running" },
-        ...prev.slice(i + 1),
-      ]);
-
-      // Simulate execution delay
-      await new Promise((resolve) => setTimeout(resolve, 600));
-
-      // Mark as success
-      setTerminalCommands((prev) => [
-        ...prev.slice(0, i),
-        {
-          ...cmd,
-          status: "success",
-          output: `✓ Command executed successfully`,
-        },
-        ...prev.slice(i + 1),
-      ]);
-    }
-    setExecutingIndex(-1);
-  };
 
   if (!isOpen) return null;
 

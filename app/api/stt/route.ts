@@ -10,6 +10,30 @@ const STT_MODELS = (process.env.OPENAI_STT_MODELS || process.env.OPENAI_STT_MODE
   .filter(Boolean);
 const GEMINI_STT_MODEL = process.env.GEMINI_STT_MODEL || "gemini-2.0-flash";
 
+interface ProviderErrorPayload {
+  error?: {
+    message?: string;
+    code?: string;
+  };
+}
+
+interface GeminiGenerateContentResponse {
+  error?: {
+    message?: string;
+  };
+  candidates?: Array<{
+    content?: {
+      parts?: Array<{
+        text?: string;
+      }>;
+    };
+  }>;
+}
+
+interface OpenAITranscriptionResponse {
+  text?: string;
+}
+
 function buildTranscriptionFormData(audioFile: Blob, filename: string, model: string) {
   const transcriptionFormData = new FormData();
   transcriptionFormData.append("file", audioFile, filename);
@@ -17,7 +41,7 @@ function buildTranscriptionFormData(audioFile: Blob, filename: string, model: st
   return transcriptionFormData;
 }
 
-function canRetryWithAnotherModel(status: number, errorData: any) {
+function canRetryWithAnotherModel(status: number, errorData: ProviderErrorPayload) {
   const errorMessage = String(errorData?.error?.message || "").toLowerCase();
   const errorCode = String(errorData?.error?.code || "").toLowerCase();
 
@@ -63,7 +87,7 @@ async function transcribeWithGemini(audioFile: Blob) {
     }
   );
 
-  const data = await response.json().catch(() => ({}));
+  const data: GeminiGenerateContentResponse = await response.json().catch(() => ({}));
 
   if (!response.ok) {
     console.error(`[STT] Gemini transcription error (${response.status}):`, JSON.stringify(data));
@@ -143,7 +167,7 @@ export async function POST(request: NextRequest) {
         });
 
         if (response.ok) {
-          const data = await response.json();
+          const data: OpenAITranscriptionResponse = await response.json();
           return NextResponse.json({
             success: true,
             text: data.text,
@@ -151,7 +175,7 @@ export async function POST(request: NextRequest) {
           });
         }
 
-        const errorData = await response.json().catch(() => ({}));
+        const errorData: ProviderErrorPayload = await response.json().catch(() => ({}));
         lastStatus = response.status;
         lastErrorMessage = errorData.error?.message || "Transcription failed";
 
@@ -175,7 +199,7 @@ export async function POST(request: NextRequest) {
 
     if (geminiResult && !geminiResult.success) {
       lastStatus = geminiResult.status ?? 500;
-      lastErrorMessage = geminiResult.error;
+      lastErrorMessage = geminiResult.error || "Gemini transcription failed";
     }
 
     return NextResponse.json({

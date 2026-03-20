@@ -2,7 +2,6 @@
 
 // In plain terms: this file sets up the app-wide page shell and shared layout behavior.
 
-import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import FloatingButton from "@/components/FloatingButton";

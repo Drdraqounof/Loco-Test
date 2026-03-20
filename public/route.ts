@@ -63,6 +63,37 @@ interface Message {
   content: string;
 }
 
+interface PublicRouteUser {
+  id?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  email?: string | null;
+}
+
+interface StoredChatMessage {
+  role?: string;
+  content?: string;
+}
+
+interface PublicRouteRequestBody {
+  messages?: Message[];
+  code?: string;
+  language?: string;
+  user?: PublicRouteUser | null;
+  topic?: string;
+}
+
+interface OpenAIChatCompletionResponse {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (!OPENAI_API_KEY) {
@@ -72,7 +103,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { messages, code, language, user, topic = "general" } = await request.json();
+    const { messages, code, language, user, topic = "general" }: PublicRouteRequestBody = await request.json();
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json(
@@ -91,15 +122,16 @@ export async function POST(request: NextRequest) {
         
         if (storedHistory) {
           try {
-            const pastMessages = JSON.parse(storedHistory);
+            const pastMessages: StoredChatMessage[] = JSON.parse(storedHistory);
             const recentMessages = pastMessages.slice(-5); // Get last 5 messages for context
             
             if (recentMessages.length > 0) {
               previousContext = `\nPREVIOUS CONVERSATION CONTEXT:
 The student has previously discussed:`;
-              recentMessages.forEach((msg: any) => {
+              recentMessages.forEach((msg) => {
                 if (msg.role === "user") {
-                  previousContext += `\n- "${msg.content.substring(0, 100)}${msg.content.length > 100 ? "..." : ""}"`;
+                  const content = msg.content || "";
+                  previousContext += `\n- "${content.substring(0, 100)}${content.length > 100 ? "..." : ""}"`;
                 }
               });
               previousContext += `\nRemember what they've learned and their progress in this conversation.`;
@@ -115,8 +147,8 @@ The student has previously discussed:`;
     }
 
     // Pre-scan code for common elements to help AI
-    let codeSummary = "";
-    let formattedCode = "";
+    const codeSummary = "";
+    const formattedCode = "";
     
     if (code) {
       // formattedCode = formatCodeWithLineNumbers(code);
@@ -131,7 +163,9 @@ The student has previously discussed:`;
       html: "HTML",
       css: "CSS"
     };
-    const currentLanguage = languageNames[language] || language || "code";
+    const normalizedLanguage = typeof language === "string" ? language : undefined;
+    const currentLanguage =
+      (normalizedLanguage ? languageNames[normalizedLanguage] : undefined) || normalizedLanguage || "code";
 
     // Build personalized greeting with user info
     let userGreeting = "";
@@ -425,8 +459,8 @@ CRITICAL: The line numbers above are 100% accurate. Use them EXACTLY as shown!` 
       );
     }
 
-    const data = await response.json();
-    let aiMessage = data.choices?.[0]?.message?.content;
+    const data: OpenAIChatCompletionResponse = await response.json();
+    const aiMessage = data.choices?.[0]?.message?.content;
 
     if (!aiMessage) {
       return NextResponse.json(

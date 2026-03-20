@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { contextBridge, ipcRenderer } = require('electron');
 
 // In plain terms: this preload file does the same safe bridge job, but for the floating button window.

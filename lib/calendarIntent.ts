@@ -136,7 +136,7 @@ function addDaysToParts(parts: { year: number; month: number; day: number }, day
 }
 
 function inferHourWithContext(rawHours: number, meridiem: string | undefined, normalized: string, nowHours: number) {
-  let hours = rawHours;
+  const hours = rawHours;
 
   if (meridiem === "pm" && hours < 12) {
     return hours + 12;

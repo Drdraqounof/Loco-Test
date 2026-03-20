@@ -8,7 +8,7 @@
 
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Position {
@@ -34,13 +34,14 @@ interface GameState {
 }
 
 type ChessTheme = 'classic' | 'modern' | 'dark';
+type DifficultyLevel = 'easy' | 'medium' | 'hard';
 
 export default function ChessGame() {
   const router = useRouter();
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [theme, setTheme] = useState<ChessTheme>('classic');
   const [gameStarted, setGameStarted] = useState(false);
-  const [difficulty, setDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
+  const [difficulty, setDifficulty] = useState<DifficultyLevel>('medium');
 
   // Initialize chess board
   const initializeBoard = () => {
@@ -122,10 +123,6 @@ export default function ChessGame() {
     }
   };
 
-  const getTextColor = (): string => {
-    return theme === 'dark' ? '#ffffff' : '#000000';
-  };
-
   const handleSquareClick = (x: number, y: number) => {
     if (!gameState || gameState.gameStatus !== 'playing') return;
 
@@ -151,19 +148,20 @@ export default function ChessGame() {
     } else if (gameState.selectedSquare && clickedPieceKey) {
       // Try to move to this square
       const newPieces = new Map(gameState.pieces);
+      const nextScore = { ...gameState.score };
 
       // Remove captured piece if any
       for (const [key, piece] of newPieces) {
         if (piece.position.x === x && piece.position.y === y && piece.color !== gameState.turn) {
           newPieces.delete(key);
-          gameState.score[gameState.turn]++;
+          nextScore[gameState.turn] += 1;
           break;
         }
       }
 
       // Move the piece
       const movingPiece = Array.from(newPieces.entries()).find(
-        ([_, p]) => p.position.x === gameState.selectedSquare!.x && p.position.y === gameState.selectedSquare!.y,
+        ([, piece]) => piece.position.x === gameState.selectedSquare!.x && piece.position.y === gameState.selectedSquare!.y,
       );
 
       if (movingPiece) {
@@ -180,7 +178,7 @@ export default function ChessGame() {
           validMoves: [],
           turn: gameState.turn === 'white' ? 'black' : 'white',
           moveHistory: [...gameState.moveHistory, moveNotation],
-          score: gameState.score,
+          score: nextScore,
         });
       }
     }
@@ -312,7 +310,7 @@ export default function ChessGame() {
             Select Difficulty:
             <select
               value={difficulty}
-              onChange={(e) => setDifficulty(e.target.value as any)}
+              onChange={(e) => setDifficulty(e.target.value as DifficultyLevel)}
               style={{
                 marginLeft: '10px',
                 padding: '8px 12px',
@@ -334,7 +332,7 @@ export default function ChessGame() {
             Theme:
             <select
               value={theme}
-              onChange={(e) => setTheme(e.target.value as any)}
+              onChange={(e) => setTheme(e.target.value as ChessTheme)}
               style={{
                 marginLeft: '10px',
                 padding: '8px 12px',
