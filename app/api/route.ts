@@ -65,6 +65,7 @@ const OPENAI_CA_CERT_PATH = process.env.OPENAI_CA_CERT_PATH;
 const OPENAI_ALLOW_INSECURE_TLS = process.env.OPENAI_ALLOW_INSECURE_TLS === "true";
 
 let openAIDispatcher: Dispatcher | null | undefined;
+let openAIInsecureFallbackDispatcher: Dispatcher | undefined;
 
 const RESOURCES = {
   javascript: [
@@ -173,9 +174,29 @@ function getOpenAIDispatcher() {
   return openAIDispatcher;
 }
 
+function getOpenAIInsecureFallbackDispatcher() {
+  if (!openAIInsecureFallbackDispatcher) {
+    openAIInsecureFallbackDispatcher = new Agent({
+      connect: {
+        rejectUnauthorized: false,
+      },
+    });
+  }
+
+  return openAIInsecureFallbackDispatcher;
+}
+
+function shouldRetryOpenAIWithInsecureTls(error: unknown) {
+  return isTlsCertificateError(error)
+    && process.env.NODE_ENV !== "production"
+    && !OPENAI_CA_CERT_PATH
+    && !OPENAI_ALLOW_INSECURE_TLS;
+}
+
 async function fetchOpenAI(url: string, init: RequestInit) {
+  const dispatcher = getOpenAIDispatcher();
+
   try {
-    const dispatcher = getOpenAIDispatcher();
     if (!dispatcher) {
       return await fetch(url, init);
     }
@@ -185,9 +206,24 @@ async function fetchOpenAI(url: string, init: RequestInit) {
       dispatcher,
     } as RequestInit & { dispatcher: Dispatcher });
   } catch (error) {
+    if (shouldRetryOpenAIWithInsecureTls(error)) {
+      console.warn(
+        "OpenAI TLS validation failed in local development. Retrying once with rejectUnauthorized=false. Configure NODE_EXTRA_CA_CERTS or OPENAI_CA_CERT_PATH for an explicit trust chain."
+      );
+
+      try {
+        return await fetch(url, {
+          ...init,
+          dispatcher: getOpenAIInsecureFallbackDispatcher(),
+        } as RequestInit & { dispatcher: Dispatcher });
+      } catch (retryError) {
+        error = retryError;
+      }
+    }
+
     if (isTlsCertificateError(error)) {
       throw new Error(
-        "OpenAI TLS validation failed. Configure NODE_EXTRA_CA_CERTS before starting the dev server, or set OPENAI_CA_CERT_PATH to a PEM file for your local root certificate."
+        "OpenAI TLS validation failed. This is usually a local certificate trust issue, not an OpenAI token balance issue. Configure NODE_EXTRA_CA_CERTS before starting the dev server, set OPENAI_CA_CERT_PATH to a PEM file for your local root certificate, or for local development only set OPENAI_ALLOW_INSECURE_TLS=true and restart the dev server."
       );
     }
 
@@ -503,6 +539,27 @@ function getUserMessageBeforeLatestAssistant(messages: Array<{ role: string; con
   }
 
   return null;
+}
+
+function isTimeOnlyCalendarReply(text: string) {
+  return /^\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(text.trim());
+}
+
+function mergeCalendarClarificationReply(originalRequest: string | null, followUp: string) {
+  if (!originalRequest) {
+    return followUp;
+  }
+
+  const trimmedFollowUp = followUp.trim();
+  if (!trimmedFollowUp) {
+    return originalRequest;
+  }
+
+  if (isTimeOnlyCalendarReply(trimmedFollowUp)) {
+    return `${originalRequest} at ${trimmedFollowUp}`;
+  }
+
+  return `${originalRequest} ${trimmedFollowUp}`;
 }
 
 function getTimeZoneOffsetString(date: Date, timeZone: string) {
@@ -1120,9 +1177,13 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    const previousCalendarRequest = getUserMessageBeforeLatestAssistant(messages);
     const isCalendarClarificationFollowUp =
       previousAssistantAskedCalendarClarification(messages) &&
       looksLikeCalendarClarificationFollowUp(latestUserMessage);
+    const calendarIntentMessage = isCalendarClarificationFollowUp
+      ? mergeCalendarClarificationReply(previousCalendarRequest, latestUserMessage)
+      : latestUserMessage;
 
     if ((!isReplyDraftRequest && looksLikeCalendarIntent(latestUserMessage)) || isCalendarClarificationFollowUp) {
       const connection = await withOptionalPersistence(
@@ -1151,7 +1212,7 @@ export async function POST(request: NextRequest) {
       try {
         const parsedIntent = await parseCalendarIntent({
           apiKey: OPENAI_API_KEY,
-          message: latestUserMessage,
+          message: calendarIntentMessage,
           timeZone,
           nowIso: new Date().toISOString(),
         });
@@ -1190,7 +1251,7 @@ export async function POST(request: NextRequest) {
         const eventTitle =
           typeof event.title === "string" && event.title.trim().length > 0 && event.title.trim().toLowerCase() !== "reminder"
             ? event.title.trim()
-            : fallbackCalendarTitleFromRequest(latestUserMessage);
+            : fallbackCalendarTitleFromRequest(calendarIntentMessage);
 
         const draft = await withOptionalPersistence(
           "Pending calendar draft save",
@@ -1201,7 +1262,7 @@ export async function POST(request: NextRequest) {
             startIso: event.startIso,
             endIso: event.endIso,
             timeZone: event.timeZone || timeZone,
-            rawRequest: latestUserMessage,
+            rawRequest: calendarIntentMessage,
           }),
           null
         );

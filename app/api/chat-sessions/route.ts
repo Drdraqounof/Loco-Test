@@ -8,6 +8,7 @@ import {
   listConversationSessions,
   saveConversationSession,
 } from "@/lib/chatMemory";
+import { isPersistenceUnavailableError } from "@/lib/persistence";
 
 interface ChatSessionRequestBody {
   id?: string;
@@ -15,16 +16,16 @@ interface ChatSessionRequestBody {
   messages?: PersistedChatMessageInput[];
 }
 
-function isPersistenceUnavailableError(error: unknown) {
-  if (error instanceof Prisma.PrismaClientInitializationError) {
+function isRecoverableChatPersistenceError(error: unknown) {
+  if (isPersistenceUnavailableError(error)) {
     return true;
   }
 
   if (error instanceof Prisma.PrismaClientKnownRequestError) {
-    return error.code === "P1001" || error.code === "P1002";
+    return error.code === "P1017" || error.code === "P2021" || error.code === "P2022";
   }
 
-  return error instanceof Error && /can't reach database server|error in postgresql connection|closed/i.test(error.message);
+  return error instanceof Prisma.PrismaClientUnknownRequestError || error instanceof Prisma.PrismaClientRustPanicError;
 }
 
 function toResponseSession(session: Awaited<ReturnType<typeof listConversationSessions>>[number]) {
@@ -47,7 +48,7 @@ export async function GET() {
       sessions: sessions.map(toResponseSession),
     });
   } catch (error) {
-    if (isPersistenceUnavailableError(error)) {
+    if (isRecoverableChatPersistenceError(error)) {
       console.warn("Chat session persistence unavailable; returning empty session list.", error);
       return NextResponse.json({
         sessions: [],
@@ -64,7 +65,7 @@ export async function DELETE() {
     await deleteAllConversationSessions();
     return NextResponse.json({ success: true });
   } catch (error) {
-    if (isPersistenceUnavailableError(error)) {
+    if (isRecoverableChatPersistenceError(error)) {
       return NextResponse.json({ success: false, error: "Chat history persistence is unavailable" }, { status: 503 });
     }
 
@@ -95,7 +96,7 @@ export async function POST(request: NextRequest) {
       session: toResponseSession(session),
     });
   } catch (error) {
-    if (isPersistenceUnavailableError(error)) {
+    if (isRecoverableChatPersistenceError(error)) {
       return NextResponse.json({ error: "Chat history persistence is unavailable" }, { status: 503 });
     }
 

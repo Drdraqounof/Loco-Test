@@ -115,6 +115,9 @@
 ### 4.1 Environment Variables
 ```env
 OPENAI_API_KEY=<key>           # OpenAI gpt-4o-mini + tts-1
+NODE_EXTRA_CA_CERTS=<path>     # Optional local root certificate bundle for OpenAI TLS trust
+OPENAI_CA_CERT_PATH=<path>     # Optional PEM file for OpenAI-specific TLS trust
+OPENAI_ALLOW_INSECURE_TLS=true # Optional local-development fallback for SSL-inspecting networks
 ANTHROPIC_API_KEY=<key>        # Optional Claude routing for code-heavy requests
 CLAUDE_MODEL=<model>           # Optional Claude model override
 GEMINI_API_KEY=<key>           # Optional STT fallback for Electron

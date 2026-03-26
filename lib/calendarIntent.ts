@@ -9,6 +9,7 @@ const AFFIRMATIVE_PATTERN = /^(yes|yep|yeah|confirm|do it|go ahead|please do|sou
 const DRAFT_MARKER = "Google Calendar draft ready.";
 const CALENDAR_CLARIFICATION_MARKERS = [
   "I need a bit more detail before I can add that to Google Calendar.",
+  "What time should I use for that reminder?",
   "I understood this as a calendar request",
   "I didn't read that as a calendar request.",
   "I couldn't confidently parse the event time.",
@@ -72,7 +73,9 @@ export function previousAssistantAskedCalendarClarification(messages: Array<{ ro
 
 export function looksLikeCalendarClarificationFollowUp(text: string) {
   const normalized = normalizeWhitespace(text);
-  return CALENDAR_NOUN_PATTERN.test(normalized) || CALENDAR_DATE_TIME_PATTERN.test(normalized);
+  return CALENDAR_NOUN_PATTERN.test(normalized)
+    || CALENDAR_DATE_TIME_PATTERN.test(normalized)
+    || /^\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(normalized);
 }
 
 function normalizeWhitespace(text: string) {
@@ -204,7 +207,7 @@ function extractHeuristicTitle(message: string) {
 function parseExplicitDateTimeIntent(message: string, timeZone: string, nowIso: string): ParsedCalendarIntent | null {
   const normalized = normalizeWhitespace(message);
   const dateMatch = normalized.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
-  const timeMatch = normalized.match(/\b(?:at|around)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const timeMatch = normalized.match(/\b(?:at|around|for)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
   const nowParts = getTimeZoneDateParts(new Date(nowIso), timeZone);
 
   let resolvedDate: { year: number; month: number; day: number } | null = null;

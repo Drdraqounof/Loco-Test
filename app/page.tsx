@@ -1001,6 +1001,11 @@ export default function Home() {
       return null;
     }
 
+    if (response.status >= 500) {
+      console.warn(`Chat history persistence failed with ${response.status}; continuing without saving this session.`);
+      return null;
+    }
+
     if (!response.ok) {
       throw new Error(`Failed to save chat session: ${response.status}`);
     }

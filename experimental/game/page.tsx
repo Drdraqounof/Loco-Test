@@ -13,36 +13,25 @@ interface GameState {
   winner: string | null;
 }
 
+type Winner = "Player" | "AI" | null;
+
+const createInitialGameState = (): GameState => ({
+  playerScore: 0,
+  aiScore: 0,
+  gameActive: true,
+  gameOver: false,
+  winner: null,
+});
+
 export default function GamePage() {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [gameState, setGameState] = useState<GameState>({
-    playerScore: 0,
-    aiScore: 0,
-    gameActive: true,
-    gameOver: false,
-    winner: null,
-  });
-  const [popupShownCount, setPopupShownCount] = useState(0);
-
-  // Track when game over state changes and reset popup counter
-  useEffect(() => {
-    if (gameState.gameOver && gameState.winner) {
-      // Only increment if popup hasn't been shown for this game over state
-      setPopupShownCount(prev => {
-        if (prev === 0) {
-          return 1;
-        }
-        return prev;
-      });
-    } else if (!gameState.gameOver) {
-      // Reset popup counter when starting a new game
-      setPopupShownCount(0);
-    }
-  }, [gameState.gameOver, gameState.winner]);
+  const [gameState, setGameState] = useState<GameState>(createInitialGameState);
 
   useEffect(() => {
     if (!canvasRef.current) return;
+
+    setGameState(createInitialGameState());
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -64,6 +53,7 @@ export default function GamePage() {
     let playerScore = 0;
     let aiScore = 0;
     let gameActive = true;
+    let animationFrameId: number | null = null;
 
     const paddleOneX = 20;
     const paddleTwoX = 770;
@@ -107,6 +97,24 @@ export default function GamePage() {
       ballSpeedY = (Math.random() - 0.5) * 8;
     };
 
+    const updateScoreState = (nextPlayerScore: number, nextAiScore: number, winner: Winner = null) => {
+      setGameState({
+        playerScore: nextPlayerScore,
+        aiScore: nextAiScore,
+        gameActive: winner === null,
+        gameOver: winner !== null,
+        winner,
+      });
+    };
+
+    const endGame = (winner: Exclude<Winner, null>, nextPlayerScore: number, nextAiScore: number) => {
+      gameActive = false;
+      updateScoreState(nextPlayerScore, nextAiScore, winner);
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+
     const gameLoop = () => {
       if (!gameActive) return;
 
@@ -147,6 +155,7 @@ export default function GamePage() {
       // Ball collision with paddles
       if (
         ballX - ballSize < paddleOneX + paddleWidth &&
+        ballSpeedX < 0 &&
         ballY > paddleOneY &&
         ballY < paddleOneY + paddleHeight
       ) {
@@ -157,6 +166,7 @@ export default function GamePage() {
 
       if (
         ballX + ballSize > paddleTwoX &&
+        ballSpeedX > 0 &&
         ballY > paddleTwoY &&
         ballY < paddleTwoY + paddleHeight
       ) {
@@ -169,22 +179,20 @@ export default function GamePage() {
       if (ballX - ballSize < 0) {
         aiScore++;
         if (aiScore >= 5) {
-          gameActive = false;
-          setGameState({ playerScore, aiScore, gameActive: false, gameOver: true, winner: "AI" });
+          endGame("AI", playerScore, aiScore);
           return;
         }
-        setGameState({ playerScore, aiScore, gameActive: true, gameOver: false, winner: null });
+        updateScoreState(playerScore, aiScore);
         resetBall();
       }
 
       if (ballX + ballSize > canvas_width) {
         playerScore++;
         if (playerScore >= 5) {
-          gameActive = false;
-          setGameState({ playerScore, aiScore, gameActive: false, gameOver: true, winner: "Player" });
+          endGame("Player", playerScore, aiScore);
           return;
         }
-        setGameState({ playerScore, aiScore, gameActive: true, gameOver: false, winner: null });
+        updateScoreState(playerScore, aiScore);
         resetBall();
       }
 
@@ -199,12 +207,16 @@ export default function GamePage() {
       drawText(playerScore.toString(), 100, 50, 32, "#00ff88");
       drawText(aiScore.toString(), 700, 50, 32, "#ff6b6b");
 
-      requestAnimationFrame(gameLoop);
+      animationFrameId = requestAnimationFrame(gameLoop);
     };
 
     gameLoop();
 
     return () => {
+      gameActive = false;
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
@@ -271,9 +283,7 @@ export default function GamePage() {
         />
 
         {/* Game Over Overlay */}
-        {gameState.gameOver && 
-         gameState.winner !== null && 
-         popupShownCount > 0 && (
+        {gameState.gameOver && gameState.winner !== null && (
           <div
             style={{
               position: "absolute",

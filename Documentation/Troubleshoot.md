@@ -6,6 +6,29 @@
 
 ## Build Issues
 
+### `OpenAI TLS validation failed` During Chat Requests
+
+**Problem**: Chat requests fail with an error similar to:
+
+```text
+OpenAI TLS validation failed. Configure NODE_EXTRA_CA_CERTS before starting the dev server...
+```
+
+**Cause**:
+1. This is usually a local TLS certificate trust problem caused by SSL inspection, a school or company proxy, or a missing local root certificate
+2. It is typically **not** an OpenAI token-balance problem
+3. The server can reach the OpenAI hostname, but Node does not trust the certificate chain being presented
+
+**Solutions**:
+1. Preferred: set `NODE_EXTRA_CA_CERTS` before starting `npm run dev`
+2. Preferred: set `OPENAI_CA_CERT_PATH` to a PEM file containing the local root certificate
+3. Local development only: set `OPENAI_ALLOW_INSECURE_TLS=true` and restart the dev server
+4. If you are on a managed school or work network, ask for the local proxy or root certificate if you want the secure fix
+
+**Notes**:
+1. Loco now retries once with insecure TLS automatically in local development when this specific certificate-chain error happens and no certificate override is configured
+2. Production should still use a proper trusted certificate chain
+
 ### `Module not found: Can't resolve 'undici'` During `next build` or `npm run dev`
 
 **Problem**: The app fails early in the build with an error similar to:

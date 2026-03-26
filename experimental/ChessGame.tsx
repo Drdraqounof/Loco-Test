@@ -8,7 +8,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 interface Position {
@@ -16,9 +16,12 @@ interface Position {
   y: number;
 }
 
+type PieceColor = 'white' | 'black';
+type PieceType = 'pawn' | 'knight' | 'bishop' | 'rook' | 'queen' | 'king';
+
 interface Piece {
-  type: 'pawn' | 'knight' | 'bishop' | 'rook' | 'queen' | 'king';
-  color: 'white' | 'black';
+  type: PieceType;
+  color: PieceColor;
   position: Position;
   hasMoved?: boolean;
 }
@@ -27,14 +30,311 @@ interface GameState {
   pieces: Map<string, Piece>;
   selectedSquare: Position | null;
   validMoves: Position[];
-  turn: 'white' | 'black';
+  turn: PieceColor;
   gameStatus: 'playing' | 'checkmate' | 'stalemate' | 'draw';
   score: { white: number; black: number };
   moveHistory: string[];
+  winner: PieceColor | null;
+}
+
+interface PieceEntry {
+  key: string;
+  piece: Piece;
+}
+
+interface MoveOption {
+  pieceKey: string;
+  piece: Piece;
+  to: Position;
+  capturedPiece: Piece | null;
 }
 
 type ChessTheme = 'classic' | 'modern' | 'dark';
 type DifficultyLevel = 'easy' | 'medium' | 'hard';
+
+const BOARD_SIZE = 8;
+
+const PIECE_VALUES: Record<PieceType, number> = {
+  pawn: 1,
+  knight: 3,
+  bishop: 3,
+  rook: 5,
+  queen: 9,
+  king: 100,
+};
+
+const AI_THINK_DELAY: Record<DifficultyLevel, number> = {
+  easy: 250,
+  medium: 450,
+  hard: 700,
+};
+
+const isInsideBoard = (x: number, y: number) => x >= 0 && x < BOARD_SIZE && y >= 0 && y < BOARD_SIZE;
+
+const positionsMatch = (left: Position, right: Position) => left.x === right.x && left.y === right.y;
+
+const toSquareNotation = ({ x, y }: Position) => `${String.fromCharCode(97 + x)}${BOARD_SIZE - y}`;
+
+const getPieceEntryAt = (pieces: Map<string, Piece>, position: Position): PieceEntry | null => {
+  for (const [key, piece] of pieces) {
+    if (positionsMatch(piece.position, position)) {
+      return { key, piece };
+    }
+  }
+
+  return null;
+};
+
+const buildMoveNotation = (piece: Piece, from: Position, to: Position, capturedPiece: Piece | null, promoted: boolean) => {
+  const piecePrefix = piece.type === 'pawn' ? '' : piece.type[0].toUpperCase();
+  const separator = capturedPiece ? 'x' : '-';
+  const promotionSuffix = promoted ? '=Q' : '';
+
+  return `${piecePrefix}${toSquareNotation(from)}${separator}${toSquareNotation(to)}${promotionSuffix}`;
+};
+
+const calculateValidMoves = (pieces: Map<string, Piece>, piece: Piece): Position[] => {
+  const moves: Position[] = [];
+  const { x, y } = piece.position;
+  const getOccupant = (targetX: number, targetY: number) => getPieceEntryAt(pieces, { x: targetX, y: targetY })?.piece ?? null;
+
+  const addDirectionalMoves = (directions: Array<[number, number]>, maxDistance = BOARD_SIZE) => {
+    for (const [dx, dy] of directions) {
+      for (let step = 1; step <= maxDistance; step++) {
+        const targetX = x + dx * step;
+        const targetY = y + dy * step;
+
+        if (!isInsideBoard(targetX, targetY)) {
+          break;
+        }
+
+        const occupant = getOccupant(targetX, targetY);
+
+        if (!occupant) {
+          moves.push({ x: targetX, y: targetY });
+          continue;
+        }
+
+        if (occupant.color !== piece.color) {
+          moves.push({ x: targetX, y: targetY });
+        }
+
+        break;
+      }
+    }
+  };
+
+  switch (piece.type) {
+    case 'pawn': {
+      const direction = piece.color === 'white' ? -1 : 1;
+      const startRow = piece.color === 'white' ? 6 : 1;
+      const oneStepY = y + direction;
+
+      if (isInsideBoard(x, oneStepY) && !getOccupant(x, oneStepY)) {
+        moves.push({ x, y: oneStepY });
+
+        const twoStepY = y + direction * 2;
+        if (y === startRow && isInsideBoard(x, twoStepY) && !getOccupant(x, twoStepY)) {
+          moves.push({ x, y: twoStepY });
+        }
+      }
+
+      for (const deltaX of [-1, 1]) {
+        const targetX = x + deltaX;
+        const targetY = y + direction;
+        if (!isInsideBoard(targetX, targetY)) {
+          continue;
+        }
+
+        const occupant = getOccupant(targetX, targetY);
+        if (occupant && occupant.color !== piece.color) {
+          moves.push({ x: targetX, y: targetY });
+        }
+      }
+      break;
+    }
+    case 'knight': {
+      const knightOffsets: Array<[number, number]> = [
+        [-2, -1],
+        [-2, 1],
+        [-1, -2],
+        [-1, 2],
+        [1, -2],
+        [1, 2],
+        [2, -1],
+        [2, 1],
+      ];
+
+      for (const [dx, dy] of knightOffsets) {
+        const targetX = x + dx;
+        const targetY = y + dy;
+
+        if (!isInsideBoard(targetX, targetY)) {
+          continue;
+        }
+
+        const occupant = getOccupant(targetX, targetY);
+        if (!occupant || occupant.color !== piece.color) {
+          moves.push({ x: targetX, y: targetY });
+        }
+      }
+      break;
+    }
+    case 'bishop':
+      addDirectionalMoves([
+        [-1, -1],
+        [-1, 1],
+        [1, -1],
+        [1, 1],
+      ]);
+      break;
+    case 'rook':
+      addDirectionalMoves([
+        [0, -1],
+        [0, 1],
+        [-1, 0],
+        [1, 0],
+      ]);
+      break;
+    case 'queen':
+      addDirectionalMoves([
+        [-1, -1],
+        [-1, 0],
+        [-1, 1],
+        [0, -1],
+        [0, 1],
+        [1, -1],
+        [1, 0],
+        [1, 1],
+      ]);
+      break;
+    case 'king':
+      addDirectionalMoves([
+        [-1, -1],
+        [-1, 0],
+        [-1, 1],
+        [0, -1],
+        [0, 1],
+        [1, -1],
+        [1, 0],
+        [1, 1],
+      ], 1);
+      break;
+  }
+
+  return moves;
+};
+
+const collectMovesForColor = (pieces: Map<string, Piece>, color: PieceColor): MoveOption[] => {
+  const moves: MoveOption[] = [];
+
+  for (const [key, piece] of pieces) {
+    if (piece.color !== color) {
+      continue;
+    }
+
+    for (const move of calculateValidMoves(pieces, piece)) {
+      moves.push({
+        pieceKey: key,
+        piece,
+        to: move,
+        capturedPiece: getPieceEntryAt(pieces, move)?.piece ?? null,
+      });
+    }
+  }
+
+  return moves;
+};
+
+const applyMoveToGameState = (currentState: GameState, pieceKey: string, destination: Position): GameState => {
+  const movingPiece = currentState.pieces.get(pieceKey);
+  if (!movingPiece) {
+    return currentState;
+  }
+
+  const nextPieces = new Map(currentState.pieces);
+  let capturedPiece: Piece | null = null;
+
+  for (const [key, piece] of nextPieces) {
+    if (positionsMatch(piece.position, destination) && piece.color !== movingPiece.color) {
+      capturedPiece = piece;
+      nextPieces.delete(key);
+      break;
+    }
+  }
+
+  const promoted = movingPiece.type === 'pawn' && (destination.y === 0 || destination.y === BOARD_SIZE - 1);
+  const nextPiece: Piece = {
+    ...movingPiece,
+    type: promoted ? 'queen' : movingPiece.type,
+    position: destination,
+    hasMoved: true,
+  };
+
+  nextPieces.set(pieceKey, nextPiece);
+
+  const nextScore = { ...currentState.score };
+  if (capturedPiece) {
+    nextScore[movingPiece.color] += 1;
+  }
+
+  const winner = capturedPiece?.type === 'king' ? movingPiece.color : null;
+  const nextTurn = winner ? movingPiece.color : movingPiece.color === 'white' ? 'black' : 'white';
+  let nextStatus: GameState['gameStatus'] = winner ? 'checkmate' : 'playing';
+
+  if (!winner) {
+    const nextMoves = collectMovesForColor(nextPieces, nextTurn);
+    if (nextMoves.length === 0) {
+      nextStatus = 'stalemate';
+    }
+  }
+
+  return {
+    pieces: nextPieces,
+    selectedSquare: null,
+    validMoves: [],
+    turn: nextTurn,
+    gameStatus: nextStatus,
+    score: nextScore,
+    moveHistory: [
+      ...currentState.moveHistory,
+      buildMoveNotation(movingPiece, movingPiece.position, destination, capturedPiece, promoted),
+    ],
+    winner,
+  };
+};
+
+const chooseAiMove = (moves: MoveOption[], difficulty: DifficultyLevel): MoveOption | null => {
+  if (moves.length === 0) {
+    return null;
+  }
+
+  if (difficulty === 'easy') {
+    return moves[Math.floor(Math.random() * moves.length)];
+  }
+
+  const scoredMoves = moves
+    .map((move) => {
+      const captureScore = move.capturedPiece ? PIECE_VALUES[move.capturedPiece.type] * 10 : 0;
+      const promotionScore = move.piece.type === 'pawn' && move.to.y === BOARD_SIZE - 1 ? 12 : 0;
+      const centerDistance = Math.abs(3.5 - move.to.x) + Math.abs(3.5 - move.to.y);
+      const centerScore = Math.max(0, 4 - centerDistance);
+      const forwardScore = move.piece.type === 'pawn' ? move.to.y : BOARD_SIZE - move.to.y;
+
+      return {
+        move,
+        score: captureScore + promotionScore + centerScore + forwardScore + Math.random(),
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+
+  if (difficulty === 'medium') {
+    const mediumPool = scoredMoves.slice(0, Math.min(3, scoredMoves.length));
+    return mediumPool[Math.floor(Math.random() * mediumPool.length)].move;
+  }
+
+  return scoredMoves[0].move;
+};
 
 export default function ChessGame() {
   const router = useRouter();
@@ -42,6 +342,7 @@ export default function ChessGame() {
   const [theme, setTheme] = useState<ChessTheme>('classic');
   const [gameStarted, setGameStarted] = useState(false);
   const [difficulty, setDifficulty] = useState<DifficultyLevel>('medium');
+  const isAiThinking = gameState?.turn === 'black' && gameState?.gameStatus === 'playing';
 
   // Initialize chess board
   const initializeBoard = () => {
@@ -93,6 +394,7 @@ export default function ChessGame() {
       gameStatus: 'playing',
       score: { white: 0, black: 0 },
       moveHistory: [],
+      winner: null,
     });
 
     setGameStarted(true);
@@ -123,148 +425,88 @@ export default function ChessGame() {
     }
   };
 
-  const handleSquareClick = (x: number, y: number) => {
-    if (!gameState || gameState.gameStatus !== 'playing') return;
-
-    // Check if there's a piece at this square
-    let clickedPiece: Piece | null = null;
-    let clickedPieceKey: string | null = null;
-
-    for (const [key, piece] of gameState.pieces) {
-      if (piece.position.x === x && piece.position.y === y) {
-        clickedPiece = piece;
-        clickedPieceKey = key;
-        break;
-      }
+  useEffect(() => {
+    if (!gameStarted || !gameState || gameState.turn !== 'black' || gameState.gameStatus !== 'playing') {
+      return;
     }
 
-    // If clicking a piece of current player, select it
-    if (clickedPiece && clickedPiece.color === gameState.turn) {
-      setGameState({
-        ...gameState,
-        selectedSquare: { x, y },
-        validMoves: calculateValidMoves(gameState.pieces, clickedPiece),
-      });
-    } else if (gameState.selectedSquare && clickedPieceKey) {
-      // Try to move to this square
-      const newPieces = new Map(gameState.pieces);
-      const nextScore = { ...gameState.score };
-
-      // Remove captured piece if any
-      for (const [key, piece] of newPieces) {
-        if (piece.position.x === x && piece.position.y === y && piece.color !== gameState.turn) {
-          newPieces.delete(key);
-          nextScore[gameState.turn] += 1;
-          break;
+    const timeoutId = window.setTimeout(() => {
+      setGameState((currentState) => {
+        if (!currentState || currentState.turn !== 'black' || currentState.gameStatus !== 'playing') {
+          return currentState;
         }
-      }
 
-      // Move the piece
-      const movingPiece = Array.from(newPieces.entries()).find(
-        ([, piece]) => piece.position.x === gameState.selectedSquare!.x && piece.position.y === gameState.selectedSquare!.y,
-      );
+        const availableMoves = collectMovesForColor(currentState.pieces, 'black');
+        const selectedMove = chooseAiMove(availableMoves, difficulty);
 
-      if (movingPiece) {
-        const [key, piece] = movingPiece;
-        const newPiece = { ...piece, position: { x, y }, hasMoved: true };
-        newPieces.set(key, newPiece);
+        if (!selectedMove) {
+          return {
+            ...currentState,
+            selectedSquare: null,
+            validMoves: [],
+            gameStatus: 'stalemate',
+            winner: null,
+          };
+        }
 
-        const moveNotation = `${String.fromCharCode(97 + gameState.selectedSquare.x)}${8 - gameState.selectedSquare.y}${String.fromCharCode(97 + x)}${8 - y}`;
+        return applyMoveToGameState(currentState, selectedMove.pieceKey, selectedMove.to);
+      });
+    }, AI_THINK_DELAY[difficulty]);
 
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [difficulty, gameStarted, gameState]);
+
+  const handleSquareClick = (x: number, y: number) => {
+    if (!gameState || gameState.gameStatus !== 'playing' || gameState.turn !== 'white' || isAiThinking) {
+      return;
+    }
+
+    const clickedPosition = { x, y };
+    const clickedEntry = getPieceEntryAt(gameState.pieces, clickedPosition);
+
+    if (clickedEntry?.piece.color === 'white') {
+      const isSameSelectedSquare =
+        gameState.selectedSquare !== null && positionsMatch(gameState.selectedSquare, clickedPosition);
+
+      if (isSameSelectedSquare) {
         setGameState({
           ...gameState,
-          pieces: newPieces,
           selectedSquare: null,
           validMoves: [],
-          turn: gameState.turn === 'white' ? 'black' : 'white',
-          moveHistory: [...gameState.moveHistory, moveNotation],
-          score: nextScore,
         });
-      }
-    }
-  };
-
-  const calculateValidMoves = (pieces: Map<string, Piece>, piece: Piece): Position[] => {
-    const moves: Position[] = [];
-    const { x, y } = piece.position;
-    const { type } = piece;
-
-    // Helper to check if square is occupied
-    const isOccupied = (px: number, py: number, byColor?: string): Piece | null => {
-      for (const p of pieces.values()) {
-        if (p.position.x === px && p.position.y === py) {
-          if (byColor && p.color !== byColor) return null;
-          return p;
-        }
-      }
-      return null;
-    };
-
-    // Helper to add moves in direction
-    const addDirectionMoves = (directions: number[][], maxDistance: number = 8) => {
-      for (const [dx, dy] of directions) {
-        for (let i = 1; i <= maxDistance; i++) {
-          const nx = x + dx * i;
-          const ny = y + dy * i;
-
-          if (nx < 0 || nx > 7 || ny < 0 || ny > 7) break;
-
-          const occupied = isOccupied(nx, ny, piece.color);
-          if (occupied && occupied.color === piece.color) break;
-
-          moves.push({ x: nx, y: ny });
-          if (occupied) break;
-        }
-      }
-    };
-
-    // Piece-specific moves
-    if (type === 'pawn') {
-      const direction = piece.color === 'white' ? -1 : 1;
-      const startRow = piece.color === 'white' ? 6 : 1;
-
-      // Forward move
-      if (!isOccupied(x, y + direction)) {
-        moves.push({ x, y: y + direction });
-
-        // Double move on first move
-        if (y === startRow && !isOccupied(x, y + 2 * direction)) {
-          moves.push({ x, y: y + 2 * direction });
-        }
+        return;
       }
 
-      // Captures
-      if (isOccupied(x - 1, y + direction) && isOccupied(x - 1, y + direction)?.color !== piece.color) {
-        moves.push({ x: x - 1, y: y + direction });
-      }
-      if (isOccupied(x + 1, y + direction) && isOccupied(x + 1, y + direction)?.color !== piece.color) {
-        moves.push({ x: x + 1, y: y + direction });
-      }
-    } else if (type === 'knight') {
-      const knightMoves = [
-        [-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1],
-      ];
-      for (const [dx, dy] of knightMoves) {
-        const nx = x + dx;
-        const ny = y + dy;
-        if (nx >= 0 && nx <= 7 && ny >= 0 && ny <= 7) {
-          const occupied = isOccupied(nx, ny);
-          if (!occupied || occupied.color !== piece.color) {
-            moves.push({ x: nx, y: ny });
-          }
-        }
-      }
-    } else if (type === 'bishop') {
-      addDirectionMoves([[-1, -1], [-1, 1], [1, -1], [1, 1]]);
-    } else if (type === 'rook') {
-      addDirectionMoves([[0, -1], [0, 1], [-1, 0], [1, 0]]);
-    } else if (type === 'queen') {
-      addDirectionMoves([[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]);
-    } else if (type === 'king') {
-      addDirectionMoves([[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]], 1);
+      setGameState({
+        ...gameState,
+        selectedSquare: clickedPosition,
+        validMoves: calculateValidMoves(gameState.pieces, clickedEntry.piece),
+      });
+      return;
     }
 
-    return moves;
+    if (!gameState.selectedSquare) {
+      return;
+    }
+
+    const isValidMove = gameState.validMoves.some((move) => positionsMatch(move, clickedPosition));
+    if (!isValidMove) {
+      setGameState({
+        ...gameState,
+        selectedSquare: null,
+        validMoves: [],
+      });
+      return;
+    }
+
+    const movingEntry = getPieceEntryAt(gameState.pieces, gameState.selectedSquare);
+    if (!movingEntry) {
+      return;
+    }
+
+    setGameState(applyMoveToGameState(gameState, movingEntry.key, clickedPosition));
   };
 
   const resetGame = () => {
@@ -287,7 +529,7 @@ export default function ChessGame() {
         }}
       >
         <div style={{ textAlign: 'center' }}>
-          <h1 style={{ fontSize: '48px', margin: 0, marginBottom: '10px' }}>♟️ Chess</h1>
+          <h1 style={{ fontSize: '48px', marginTop: 0, marginRight: 0, marginBottom: '10px', marginLeft: 0 }}>♟️ Chess</h1>
           <p style={{ fontSize: '18px', opacity: 0.8, marginBottom: '30px' }}>
             A classic strategy game built into Loco
           </p>
@@ -423,7 +665,12 @@ export default function ChessGame() {
       <div style={{ textAlign: 'center' }}>
         <h1 style={{ fontSize: '32px', margin: 0 }}>♟️ Chess Game</h1>
         <p style={{ fontSize: '14px', opacity: 0.8, margin: '5px 0 0 0' }}>
-          Turn: <strong>{gameState?.turn?.toUpperCase()}</strong> | Status: {gameState?.gameStatus}
+          {gameState?.winner
+            ? `Winner: ${gameState.winner.toUpperCase()} | Status: ${gameState.gameStatus}`
+            : `Turn: ${gameState?.turn?.toUpperCase()} | Status: ${gameState?.gameStatus}`}
+        </p>
+        <p style={{ fontSize: '13px', opacity: 0.7, margin: '8px 0 0 0' }}>
+          You play as White. {isAiThinking ? 'Black is thinking...' : 'Black is controlled by the AI.'}
         </p>
       </div>
 
@@ -472,10 +719,11 @@ export default function ChessGame() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor: 'pointer',
+                  cursor: gameState?.turn === 'white' && !isAiThinking ? 'pointer' : 'default',
                   fontSize: '32px',
                   transition: 'all 0.15s ease',
                   boxShadow: isValid ? 'inset 0 0 10px rgba(255, 107, 107, 0.5)' : 'none',
+                  opacity: gameState?.turn === 'black' && !piece ? 0.95 : 1,
                 }}
                 onMouseEnter={(e) => {
                   if (!isSelected) {
@@ -574,7 +822,7 @@ export default function ChessGame() {
           maxWidth: '400px',
         }}
       >
-        Click on a piece to select it. Valid moves will be highlighted. Click on a highlighted square to move.
+        Click a white piece to see legal moves. Empty squares now accept valid moves, black pieces are AI-controlled, and pawns promote to queens automatically.
       </div>
     </div>
   );

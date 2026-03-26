@@ -9,18 +9,24 @@ interface PingPongGameProps {
   onClose: () => void;
 }
 
+type Winner = "Player" | "AI" | null;
+
+const createInitialGameState = () => ({
+  playerScore: 0,
+  aiScore: 0,
+  gameActive: true,
+  gameOver: false,
+  winner: null as Winner,
+});
+
 export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [gameState, setGameState] = useState({
-    playerScore: 0,
-    aiScore: 0,
-    gameActive: true,
-    gameOver: false,
-    winner: null as string | null,
-  });
+  const [gameState, setGameState] = useState(createInitialGameState);
 
   useEffect(() => {
     if (!isOpen || !canvasRef.current) return;
+
+    setGameState(createInitialGameState());
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext("2d");
@@ -41,7 +47,8 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
     let ballSpeedY = 4;
     let playerScore = 0;
     let aiScore = 0;
-    const gameActive = true;
+    let isRunning = true;
+    let animationFrameId: number | null = null;
 
     const paddleOneX = 20;
     const paddleTwoX = 770;
@@ -85,8 +92,26 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
       ballSpeedY = (Math.random() - 0.5) * 8;
     };
 
+    const updateScoreState = (nextPlayerScore: number, nextAiScore: number, winner: Winner = null) => {
+      setGameState({
+        playerScore: nextPlayerScore,
+        aiScore: nextAiScore,
+        gameActive: winner === null,
+        gameOver: winner !== null,
+        winner,
+      });
+    };
+
+    const endGame = (winner: Exclude<Winner, null>, nextPlayerScore: number, nextAiScore: number) => {
+      isRunning = false;
+      updateScoreState(nextPlayerScore, nextAiScore, winner);
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
+    };
+
     const gameLoop = () => {
-      if (!gameActive) return;
+      if (!isRunning) return;
 
       // Clear canvas
       drawRect(0, 0, canvas_width, canvas_height, "#0a0e27");
@@ -125,6 +150,7 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
       // Ball collision with paddles
       if (
         ballX - ballSize < paddleOneX + paddleWidth &&
+        ballSpeedX < 0 &&
         ballY > paddleOneY &&
         ballY < paddleOneY + paddleHeight
       ) {
@@ -135,6 +161,7 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
 
       if (
         ballX + ballSize > paddleTwoX &&
+        ballSpeedX > 0 &&
         ballY > paddleTwoY &&
         ballY < paddleTwoY + paddleHeight
       ) {
@@ -147,20 +174,20 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
       if (ballX - ballSize < 0) {
         aiScore++;
         if (aiScore >= 5) {
-          setGameState({ playerScore, aiScore, gameActive: false, gameOver: true, winner: "AI" });
+          endGame("AI", playerScore, aiScore);
           return;
         }
-        setGameState({ playerScore, aiScore, gameActive: true, gameOver: false, winner: null });
+        updateScoreState(playerScore, aiScore);
         resetBall();
       }
 
       if (ballX + ballSize > canvas_width) {
         playerScore++;
         if (playerScore >= 5) {
-          setGameState({ playerScore, aiScore, gameActive: false, gameOver: true, winner: "Player" });
+          endGame("Player", playerScore, aiScore);
           return;
         }
-        setGameState({ playerScore, aiScore, gameActive: true, gameOver: false, winner: null });
+        updateScoreState(playerScore, aiScore);
         resetBall();
       }
 
@@ -175,12 +202,16 @@ export default function PingPongGame({ isOpen, onClose }: PingPongGameProps) {
       drawText(playerScore.toString(), 100, 50, 32, "#00ff88");
       drawText(aiScore.toString(), 700, 50, 32, "#ff6b6b");
 
-      requestAnimationFrame(gameLoop);
+      animationFrameId = requestAnimationFrame(gameLoop);
     };
 
     gameLoop();
 
     return () => {
+      isRunning = false;
+      if (animationFrameId !== null) {
+        cancelAnimationFrame(animationFrameId);
+      }
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
