@@ -6,7 +6,7 @@
 
 ## 1. Purpose
 
-This document explains how Loco handles code-oriented requests from the moment a user sends a prompt to the moment the response is shown in the app preview panel.
+This document explains how Doco handles code-oriented requests from the moment a user sends a prompt to the moment the response is shown in the app preview panel.
 
 It focuses on the current pipeline implemented in:
 
