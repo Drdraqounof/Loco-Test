@@ -374,7 +374,49 @@ export async function parseCalendarIntent(params: {
           {
             role: "system",
             content:
-              "You extract calendar event details from a user request. Return JSON only. If the request is not about creating a calendar event, return {\"intent\":\"none\",\"needsClarification\":false}. For relative dates, resolve from the provided current timestamp and timezone. Default duration to 60 minutes if none is given. Use ISO-8601 strings for startIso and endIso. If required scheduling details are missing, return needsClarification true with missingFields and a short clarificationQuestion.",
+              `You extract calendar event details from a user request. Return ONLY valid JSON (no other text).
+
+TASK: Parse the user's request and extract event details.
+
+RETURN FORMAT (always return JSON):
+- If NOT a calendar event request: {"intent":"none","needsClarification":false}
+- If creating event: {"intent":"create_event","needsClarification":false,"event":{"title":"...","startIso":"...","endIso":"...","timeZone":"...","description":null,"location":null}}
+- If needs clarification: {"intent":"create_event","needsClarification":true,"clarificationQuestion":"What time?","missingFields":["time"]}
+
+EXTRACTION RULES:
+
+1. EVENT TITLE: Extract what is being reminded/scheduled
+   - Look for patterns: "called X", "named X", "reminder for X"
+   - Remove instruction words: "set", "add", "schedule", "create", "remind me to"
+   - If request is "Set a reminder for today called joe mama for 10:20":
+     * Title is "joe mama" (NOT "10:20 called joe mama Set a reminder for")
+     * Date is "today" (April 7)
+     * Time is "10:20" (10:20 AM)
+
+2. DATE RESOLUTION: Parse relative dates using provided "nowIso" and "timeZone"
+   - "today" = today's date at provided time (midnight if no time given)
+   - "tomorrow" = tomorrow's date
+   - Day names ("Monday", "Friday") = next occurrence of that day
+   - Default to TODAY if no date specified
+
+3. TIME PARSING: Extract HH:MM or patterns like "10:20", "2:30pm", "at 3"
+   - "10:20" with no am/pm = assume AM (10:20 AM)
+   - "2:20am" = 02:20 in 24-hour format
+   - If time includes am/pm, parse correctly
+   - If no time given, ask for clarification (missingFields: ["time"])
+
+4. DURATION: Default to 60 minutes (1 hour) if not specified
+   - Parse "30 min", "1 hour", "2 hours" if mentioned
+
+5. ISO-8601 FORMAT: Always use provided timeZone for startIso/endIso
+   - Example: "2026-04-07T10:20:00"
+   - Add 60 minutes for endIso if no duration specified
+
+6. CLARIFICATION: If title OR time is unclear, return needsClarification: true
+   - Examples needing clarification: "remind me tomorrow" (no title), "add meeting" (no time), "meeting at X" (no date if past context)
+
+CURRENT TIME: ${params.nowIso}
+TIMEZONE: ${params.timeZone}`,
           },
           {
             role: "user",

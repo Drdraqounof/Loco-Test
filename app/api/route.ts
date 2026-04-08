@@ -55,14 +55,20 @@ import {
   type AttachmentContextItem,
 } from "@/lib/attachmentContext";
 import { isPersistenceUnavailableError } from "@/lib/persistence";
+import { loadGameExamples, formatGameExamplesForContext } from "@/lib/gameExamples";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const AI_PROVIDER = process.env.AI_PROVIDER || "openai";
+const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
+const AI_PROVIDER = process.env.AI_PROVIDER || "gemini";
 const TTS_PROVIDER = process.env.TTS_PROVIDER || "openai";
 const LIVE_CALENDAR_DELETE_MARKER = "Google Calendar delete confirmation ready.";
 const OPENAI_CA_CERT_PATH = process.env.OPENAI_CA_CERT_PATH;
 const OPENAI_ALLOW_INSECURE_TLS = process.env.OPENAI_ALLOW_INSECURE_TLS === "true";
+const CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
+const CLAUDE_MODEL = "claude-3-5-sonnet-20241022";
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+const GEMINI_MODEL = "gemini-2.0-flash";
 
 let openAIDispatcher: Dispatcher | null | undefined;
 let openAIInsecureFallbackDispatcher: Dispatcher | undefined;
@@ -311,6 +317,142 @@ async function callOpenAIChat(messages: Message[], options: OpenAIChatOptions = 
   return content;
 }
 
+async function callClaudeChat(
+  messages: Message[],
+  options: { maxTokens?: number; temperature?: number } = {}
+): Promise<string> {
+  if (!CLAUDE_API_KEY) {
+    throw new Error("Claude API key not configured");
+  }
+
+  const claudeMessages = messages
+    .filter((msg) => msg.role !== "system")
+    .map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+
+  const systemMessages = messages
+    .filter((msg) => msg.role === "system")
+    .map((msg) => msg.content)
+    .join("\n\n");
+
+  const response = await fetch(CLAUDE_API_URL, {
+    method: "POST",
+    headers: {
+      "x-api-key": CLAUDE_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: options.maxTokens ?? 1000,
+      ...(systemMessages ? { system: systemMessages } : {}),
+      messages: claudeMessages,
+      temperature: options.temperature ?? 0.7,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    // Silent failure - will fall back to OpenAI
+    throw new Error(
+      errorData.error?.message || "Failed to get response from Claude"
+    );
+  }
+
+  const data = await response.json();
+  const content = data.content?.[0]?.text;
+
+  if (!content) {
+    throw new Error("No response from Claude");
+  }
+
+  return content;
+}
+
+async function callGeminiChat(
+  messages: Message[],
+  options: { maxTokens?: number; temperature?: number } = {}
+): Promise<string> {
+  if (!GEMINI_API_KEY) {
+    throw new Error("Gemini API key not configured");
+  }
+
+  // Convert messages to Gemini format
+  const geminiContents: Array<{ role: string; parts: Array<{ text: string }> }> =
+    [];
+
+  // Collect system and regular messages
+  const regularMessages = messages.filter((msg) => msg.role !== "system");
+  const systemMessages = messages.filter((msg) => msg.role === "system");
+
+  // Combine system messages but truncate for Gemini (it has strict limits)
+  let systemContext = "";
+  if (systemMessages.length > 0) {
+    const fullSystem = systemMessages.map((msg) => msg.content).join("\n\n");
+    // Keep only the core personality and rules, truncate memory and detailed instructions
+    const lines = fullSystem.split("\n");
+    const essentialLines = lines.slice(0, 80); // Keep first ~80 lines (core instructions)
+    systemContext = essentialLines.join("\n");
+    
+    // Ensure we have key instructions
+    if (!systemContext.includes("PERSONALITY")) {
+      systemContext = "You are Loco, an intelligent assistant helping with code and programming.\nBe clear, concise, and encouraging.\n\n" + systemContext;
+    }
+  }
+
+  // Build the contents array
+  for (const msg of regularMessages) {
+    let content = msg.content;
+
+    // Prepend (truncated) system instructions to the first user message
+    if (msg.role === "user" && systemContext && geminiContents.length === 0) {
+      content = `${systemContext}\n\n---\n\nUser request:\n${content}`;
+    }
+
+    geminiContents.push({
+      role: msg.role === "user" ? "user" : "model",
+      parts: [{ text: content }],
+    });
+  }
+
+  const response = await fetch(
+    `${GEMINI_API_URL}?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: GEMINI_MODEL,
+        contents: geminiContents,
+        generationConfig: {
+          maxOutputTokens: options.maxTokens ?? 1000,
+          temperature: options.temperature ?? 0.7,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    console.error("Gemini API error:", errorData);
+    throw new Error(
+      errorData.error?.message || "Failed to get response from Gemini"
+    );
+  }
+
+  const data = await response.json();
+  const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+  if (!content) {
+    throw new Error("No response from Gemini");
+  }
+
+  return content;
+}
+
 function parsePipelineReviewResult(content: string): PipelineReviewResult {
   let parsed: Partial<PipelineReviewResult> = {};
 
@@ -543,6 +685,111 @@ function getUserMessageBeforeLatestAssistant(messages: Array<{ role: string; con
 
 function isTimeOnlyCalendarReply(text: string) {
   return /^\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(text.trim());
+}
+
+function looksLikeCodeRequest(text: string): boolean {
+  const codeKeywords = [
+    /\b(write|generate|create|build|code)\b.*(?:function|method|component|script|class|code|snippet|helper)/i,
+    /\b(generate|create|write).*(?:javascript|typescript|python|java|c\+\+|rust|go|php|sql|html|css|react|vue|angular)\b/i,
+    /\b(refactor|optimize|fix|debug)\b.*(?:code|function|method|logic)\b/i,
+    /\bcode\s(?:for|to|that)/i,
+    /(?:how|can you|please)\s+(?:write|create|generate|build).*(?:code|function|component|script)/i,
+    /\bfunction\b|\bclass\b|\bcomponent\b|\bhelper\b|\bmodule\b/i,
+  ];
+
+  return codeKeywords.some((keyword) => keyword.test(text));
+}
+
+function looksLikeGameRequest(text: string): boolean {
+  const gameKeywords = [
+    // Game creation
+    /\b(create|build|make|write|generate)\b.*\bgame\b/i,
+    /\bgame\b.*\b(create|build|make|write|generate)\b/i,
+    /\b(shooter|platformer|puzzle|rpg|arcade|retro)\b.*\bgame\b/i,
+    /\bgame\b.*\b(shooter|platformer|puzzle|rpg|arcade|retro)\b/i,
+    /\b(canvas|html5|webgl)\b.*\bgame\b/i,
+    /\bplayable\b.*(?:game|prototype)/i,
+    
+    // Game modifications and additions
+    /\b(add|implement|create|build|make|improve|enhance)\b.*\b(enemies|enemy|boss|wave|level|feature|mechanic|animation|effect|particle|ui|menu)/i,
+    /\b(enemies|enemy|boss|waves|levels|mechanics|animations)\b.*\b(to|for|in).*\bgame\b/i,
+    /\b(game mechanics|game feature|game element|enemy|boss|wave|level|scoring|health|collision)\b/i,
+    /\b(2d|3d|html5|canvas|shooter|platformer|puzzle|arcade)\b/i,
+  ];
+
+  return gameKeywords.some((keyword) => keyword.test(text));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTONOMOUS GAME GENERATION
+// Generates games without user interaction (batch/background mode)
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function generateGameAutonomously(gameType: string = "2D Shooter"): Promise<string> {
+  "use server";
+  
+  const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+  const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || "";
+
+  if (!OPENAI_API_KEY && !CLAUDE_API_KEY) {
+    throw new Error("No API keys configured for autonomous game generation");
+  }
+
+  // Load game examples
+  const gameExamples = loadGameExamples();
+  const gameExamplesContext = formatGameExamplesForContext(gameExamples);
+
+  // Build system prompt with game directives
+  const autonomousSystemPrompt = `You are an expert game developer. Your task is to autonomously generate a high-quality, complete game.
+
+Requirements:
+- Generate a full, production-ready ${gameType}
+- Include all game mechanics, UI, styling, and logic in a single HTML file
+- NO external files (embedded CSS and JavaScript only)
+- 400+ lines of polished code
+- Professional styling with animations
+
+${gameExamplesContext}`;
+
+  // Craft autonomous generation prompt
+  const autonomousMessages: Message[] = [
+    { 
+      role: "system", 
+      content: autonomousSystemPrompt 
+    },
+    { 
+      role: "user", 
+      content: `Generate a complete, production-ready ${gameType} game. Output ONLY the HTML code.` 
+    }
+  ];
+
+  // Create timestamp for tracking
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] Starting autonomous game generation: ${gameType}`);
+
+  try {
+    // Try Claude first if available
+    if (CLAUDE_API_KEY) {
+      const game = await callClaudeChat(autonomousMessages, {
+        temperature: 0.5,
+        maxTokens: 6000,
+      });
+      console.log(`[${timestamp}] Generated game via Claude: ${game.length} chars`);
+      return game;
+    } else {
+      // Fall back to OpenAI
+      const game = await callOpenAIChat(autonomousMessages, {
+        temperature: 0.5,
+        maxTokens: 6000,
+      });
+      console.log(`[${timestamp}] Generated game via OpenAI: ${game.length} chars`);
+      return game;
+    }
+  } catch (error) {
+    console.error(`[${timestamp}] Autonomous game generation failed:`, error);
+    throw new Error(`Failed to generate game: ${error instanceof Error ? error.message : "Unknown error"}`);
+  }
 }
 
 function mergeCalendarClarificationReply(originalRequest: string | null, followUp: string) {
@@ -980,6 +1227,8 @@ export async function POST(request: NextRequest) {
     }
 
     const isReplyDraftRequest = looksLikeReplyDraftRequest(latestUserMessage);
+    const isGameRequest = looksLikeGameRequest(latestUserMessage);
+    const isCodeRequest = looksLikeCodeRequest(latestUserMessage);
 
     if (!isReplyDraftRequest && (looksLikeLiveCalendarDeleteRequest(latestUserMessage) || looksLikeLiveCalendarReadRequest(latestUserMessage))) {
       const connection = await withOptionalPersistence(
@@ -1185,7 +1434,7 @@ export async function POST(request: NextRequest) {
       ? mergeCalendarClarificationReply(previousCalendarRequest, latestUserMessage)
       : latestUserMessage;
 
-    if ((!isReplyDraftRequest && looksLikeCalendarIntent(latestUserMessage)) || isCalendarClarificationFollowUp) {
+    if ((!isReplyDraftRequest && looksLikeCalendarIntent(latestUserMessage) && !isGameRequest) || isCalendarClarificationFollowUp) {
       const connection = await withOptionalPersistence(
         "Google Calendar connection lookup",
         () => getStoredCalendarConnection(),
@@ -1244,6 +1493,87 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({
             success: true,
             message: "I couldn't confidently parse the event time. Please restate it with a clearer date and time.",
+            audio: null,
+          });
+        }
+
+        // Check if the requested time has already passed
+        const now = new Date();
+        if (startDate <= now) {
+          const eventTitle =
+            typeof event.title === "string" && event.title.trim().length > 0 && event.title.trim().toLowerCase() !== "reminder"
+              ? event.title.trim()
+              : fallbackCalendarTitleFromRequest(calendarIntentMessage);
+
+          // Option 1: If it's still "today", suggest a time later today (1 hour from now)
+          const startOfTomorrow = new Date(now);
+          startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+          startOfTomorrow.setHours(0, 0, 0, 0);
+
+          if (startDate.getTime() === new Date(startDate).setHours(0, 0, 0, 0) || startDate.getDate() === now.getDate()) {
+            // Suggested time: 1 hour from now, or end of business day if too late
+            let suggestedTime = new Date(now);
+            suggestedTime.setHours(suggestedTime.getHours() + 1, 0, 0, 0);
+
+            // If suggested time is after 6 PM, suggest tomorrow morning at original time instead
+            if (suggestedTime.getHours() >= 18) {
+              const tomorrowAtSameTime = new Date(startDate);
+              tomorrowAtSameTime.setDate(tomorrowAtSameTime.getDate() + 1);
+
+              const timeFormatter = new Intl.DateTimeFormat("en-US", {
+                weekday: "long",
+                month: "long",
+                day: "numeric",
+                hour: "numeric",
+                minute: "2-digit",
+                timeZone,
+              });
+
+              const originalTimeStr = timeFormatter.format(startDate);
+              const tomorrowTimeStr = timeFormatter.format(tomorrowAtSameTime);
+
+              return NextResponse.json({
+                success: true,
+                message: `That time (${originalTimeStr}) has already passed today. Would you like me to schedule "${eventTitle}" for tomorrow at that time instead (${tomorrowTimeStr})? Or tell me a different time.`,
+                audio: null,
+              });
+            }
+
+            const timeFormatter = new Intl.DateTimeFormat("en-US", {
+              hour: "numeric",
+              minute: "2-digit",
+              timeZone,
+            });
+
+            const originalTimeStr = timeFormatter.format(startDate);
+            const suggestedTimeStr = timeFormatter.format(suggestedTime);
+
+            return NextResponse.json({
+              success: true,
+              message: `That time (${originalTimeStr}) has already passed today. Would you like me to schedule "${eventTitle}" for today at ${suggestedTimeStr} instead? Or tell me a different time.`,
+              audio: null,
+            });
+          }
+
+          // If it's a past date, suggest tomorrow at the same time
+          const tomorrowAtSameTime = new Date(startDate);
+          tomorrowAtSameTime.setDate(tomorrowAtSameTime.getDate() + 1);
+
+          const timeFormatter = new Intl.DateTimeFormat("en-US", {
+            weekday: "long",
+            month: "long",
+            day: "numeric",
+            hour: "numeric",
+            minute: "2-digit",
+            timeZone,
+          });
+
+          const originalTimeStr = timeFormatter.format(startDate);
+          const tomorrowTimeStr = timeFormatter.format(tomorrowAtSameTime);
+
+          return NextResponse.json({
+            success: true,
+            message: `That time (${originalTimeStr}) has already passed. Would you like me to schedule "${eventTitle}" for tomorrow at that time instead (${tomorrowTimeStr})? Or tell me a different time.`,
             audio: null,
           });
         }
@@ -1598,25 +1928,74 @@ Make coding feel **alive, understandable, and achievable.**`;
 
     const recentMessages = messages.slice(-10).map((msg: { role: string; content: string }, index: number, source: Array<{ role: string; content: string }>) => {
       const isLatestUserMessage = index === source.length - 1 && msg.role === "user";
+      
+      let messageContent = isLatestUserMessage && attachmentContext
+        ? `${msg.content}\n\n${attachmentContext}`
+        : msg.content;
+      
       return {
         role: msg.role as "user" | "assistant",
-        content: isLatestUserMessage && attachmentContext
-          ? `${msg.content}\n\n${attachmentContext}`
-          : msg.content,
+        content: messageContent,
       };
     });
 
+    // Build system prompt based on request type
+    let finalSystemPrompt = systemPrompt;
+
+    if (isGameRequest) {
+      // For game requests, use ONLY the copy template - NO OTHER CONTEXT
+      const gameExamples = loadGameExamples();
+      const gameExamplesContext = formatGameExamplesForContext(gameExamples);
+
+      if (gameExamplesContext) {
+        // Game request: ONLY the copy instructions, nothing else
+        finalSystemPrompt = gameExamplesContext;
+      }
+    } else if (isCodeRequest) {
+      // For code requests (non-game), still use game examples but keep Loco persona
+      const gameExamples = loadGameExamples();
+      const gameExamplesContext = formatGameExamplesForContext(gameExamples);
+
+      if (gameExamplesContext) {
+        finalSystemPrompt = `${gameExamplesContext}\n\n${systemPrompt}`;
+      }
+    }
+
     const apiMessages: Message[] = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: finalSystemPrompt },
       ...(previewRuntimeIssueContext ? [{ role: "system" as const, content: previewRuntimeIssueContext }] : []),
       ...recentMessages,
     ];
-    let aiMessage = await callOpenAIChat(apiMessages, {
-      temperature: 0.7,
-      maxTokens: 1000,
-    });
 
-    let pipelineReview = await reviewLocoResponse({
+    // Use Claude for code/game if available, otherwise OpenAI
+    const useClaudeForCodeGame = (isCodeRequest || isGameRequest) && CLAUDE_API_KEY;
+    
+    let aiMessage: string;
+    
+    // For game/code requests, use higher token limits to generate full featured games
+    const tokenConfig = isGameRequest ? { temperature: 0.1, maxTokens: 8000 } : { temperature: 0.7, maxTokens: 1000 };
+    
+    if (useClaudeForCodeGame) {
+      try {
+        aiMessage = await callClaudeChat(apiMessages, tokenConfig);
+      } catch (claudeError) {
+        // Silent fallback to OpenAI
+        aiMessage = await callOpenAIChat(apiMessages, tokenConfig);
+      }
+    } else {
+      aiMessage = await callOpenAIChat(apiMessages, tokenConfig);
+    }
+
+    // Skip review for game requests - just return the copied template
+    let pipelineReview = isGameRequest ? {
+      approved: true,
+      matchesUserRequest: true,
+      worksLikely: true,
+      confidence: 1,
+      updatedUserQuery: latestUserMessage,
+      reviewerNotes: "Game copy - no review needed",
+      fixes: [],
+    } : await reviewLocoResponse({
       systemPrompt,
       recentMessages: apiMessages.filter((message) => message.role !== "system"),
       latestUserMessage,
@@ -1649,14 +2028,46 @@ Instructions:
 - If code is needed, provide the corrected complete code.
 - If the runtime error indicates the previous approach failed, replace it with a working one.`;
 
-      aiMessage = await callOpenAIChat([
-        ...apiMessages,
-        { role: "assistant", content: aiMessage },
-        { role: "system", content: revisionInstruction },
-      ], {
-        temperature: 0.35,
-        maxTokens: 1200,
-      });
+      if (useClaudeForCodeGame) {
+        try {
+          aiMessage = await callClaudeChat(
+            [
+              ...apiMessages,
+              { role: "assistant", content: aiMessage },
+              { role: "system", content: revisionInstruction },
+            ],
+            {
+              temperature: 0.35,
+              maxTokens: 1200,
+            }
+          );
+        } catch (claudeError) {
+          console.warn("Claude API failed during revision, falling back to OpenAI:", claudeError);
+          aiMessage = await callOpenAIChat(
+            [
+              ...apiMessages,
+              { role: "assistant", content: aiMessage },
+              { role: "system", content: revisionInstruction },
+            ],
+            {
+              temperature: 0.35,
+              maxTokens: 1200,
+            }
+          );
+        }
+      } else {
+        aiMessage = await callOpenAIChat(
+          [
+            ...apiMessages,
+            { role: "assistant", content: aiMessage },
+            { role: "system", content: revisionInstruction },
+          ],
+          {
+            temperature: 0.35,
+            maxTokens: 1200,
+          }
+        );
+      }
 
       pipelineReview = await reviewLocoResponse({
         systemPrompt,

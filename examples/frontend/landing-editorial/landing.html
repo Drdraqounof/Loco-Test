@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Landing Page - Brand</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background: #ffffff;
+      color: #1a1a1a;
+      line-height: 1.6;
+    }
+
+    a {
+      text-decoration: none;
+      color: inherit;
+    }
+
+    button {
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+    }
+
+    /* Navigation */
+    nav {
+      position: sticky;
+      top: 0;
+      background: #ffffff;
+      border-bottom: 1px solid #f0f0f0;
+      z-index: 100;
+      padding: 0 2rem;
+    }
+
+    .nav-container {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 60px;
+    }
+
+    .nav-brand {
+      font-size: 18px;
+      font-weight: 600;
+      color: #0a1628;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 2rem;
+      font-size: 14px;
+    }
+
+    .nav-links a {
+      color: #666;
+      transition: color 0.2s;
+    }
+
+    .nav-links a:hover {
+      color: #0a1628;
+    }
+
+    /* Hero Section */
+    .hero {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 6rem 2rem 4rem;
+      text-align: center;
+    }
+
+    .hero h1 {
+      font-size: 48px;
+      font-weight: 500;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+      color: #0a1628;
+    }
+
+    .hero p {
+      font-size: 20px;
+      color: #666;
+      line-height: 1.6;
+      margin-bottom: 2rem;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .hero-buttons {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      margin-bottom: 4rem;
+    }
+
+    .btn-primary {
+      padding: 12px 32px;
+      background: #378ADD;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .btn-primary:hover {
+      background: #2b6bb5;
+    }
+
+    .btn-secondary {
+      padding: 12px 32px;
+      background: transparent;
+      color: #0a1628;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .btn-secondary:hover {
+      border-color: #0a1628;
+    }
+
+    .hero-image {
+      background: #f5f7fa;
+      border-radius: 12px;
+      padding: 3rem;
+      min-height: 300px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #999;
+      font-size: 14px;
+    }
+
+    /* Trust Section */
+    .trust-section {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 3rem 2rem;
+      border-top: 1px solid #f0f0f0;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .trust-label {
+      text-align: center;
+      font-size: 12px;
+      color: #999;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 2rem;
+    }
+
+    .trust-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 2rem;
+      text-align: center;
+    }
+
+    .trust-item {
+      color: #666;
+      font-weight: 500;
+    }
+
+    /* Features Section */
+    .features {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+    }
+
+    .section-header {
+      text-align: center;
+      margin-bottom: 3rem;
+    }
+
+    .section-header h2 {
+      font-size: 32px;
+      font-weight: 500;
+      margin-bottom: 1rem;
+      color: #0a1628;
+    }
+
+    .section-header p {
+      color: #666;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 2rem;
+    }
+
+    .feature-card {
+      padding: 2rem;
+      border: 1px solid #f0f0f0;
+      border-radius: 12px;
+      background: #ffffff;
+      transition: all 0.2s;
+    }
+
+    .feature-card:hover {
+      border-color: #ddd;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    }
+
+    .feature-icon {
+      font-size: 28px;
+      margin-bottom: 1rem;
+    }
+
+    .feature-card h3 {
+      font-size: 16px;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+      color: #0a1628;
+    }
+
+    .feature-card p {
+      font-size: 14px;
+      color: #666;
+      line-height: 1.6;
+    }
+
+    /* Pricing Section */
+    .pricing {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+      border-top: 1px solid #f0f0f0;
+    }
+
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 2rem;
+    }
+
+    .pricing-card {
+      padding: 2rem;
+      border: 1px solid #f0f0f0;
+      border-radius: 12px;
+      position: relative;
+    }
+
+    .pricing-card.featured {
+      border: 2px solid #378ADD;
+    }
+
+    .pricing-card.featured .badge {
+      position: absolute;
+      top: -12px;
+      left: 16px;
+      background: #378ADD;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .pricing-card h3 {
+      font-size: 16px;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+      color: #0a1628;
+    }
+
+    .pricing-card-subtitle {
+      font-size: 12px;
+      color: #999;
+      margin-bottom: 1.5rem;
+    }
+
+    .pricing-price {
+      font-size: 28px;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+      color: #0a1628;
+    }
+
+    .pricing-price span {
+      font-size: 14px;
+      color: #999;
+    }
+
+    .pricing-billing {
+      font-size: 13px;
+      color: #999;
+      margin-bottom: 1.5rem;
+    }
+
+    .pricing-button {
+      width: 100%;
+      padding: 10px;
+      background: #f5f7fa;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-bottom: 1.5rem;
+    }
+
+    .pricing-card.featured .pricing-button {
+      background: #378ADD;
+      color: white;
+      border-color: #378ADD;
+    }
+
+    .pricing-features {
+      font-size: 13px;
+      color: #666;
+      line-height: 1.8;
+    }
+
+    .pricing-features div {
+      margin-bottom: 0.5rem;
+    }
+
+    /* CTA Section */
+    .cta-section {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 4rem 2rem;
+      text-align: center;
+      border-top: 1px solid #f0f0f0;
+    }
+
+    .cta-section h2 {
+      font-size: 32px;
+      font-weight: 500;
+      margin-bottom: 1rem;
+      color: #0a1628;
+    }
+
+    .cta-section p {
+      font-size: 16px;
+      color: #666;
+      margin-bottom: 2rem;
+    }
+
+    .cta-buttons {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid #f0f0f0;
+      padding: 3rem 2rem;
+      background: #f9f9f9;
+    }
+
+    .footer-container {
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+
+    .footer-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 2rem;
+      margin-bottom: 2rem;
+    }
+
+    .footer-section h4 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #0a1628;
+      margin-bottom: 1rem;
+    }
+
+    .footer-section a {
+      display: block;
+      font-size: 13px;
+      color: #666;
+      margin-bottom: 0.5rem;
+      transition: color 0.2s;
+    }
+
+    .footer-section a:hover {
+      color: #0a1628;
+    }
+
+    .footer-bottom {
+      border-top: 1px solid #ddd;
+      padding-top: 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .footer-copy {
+      font-size: 13px;
+      color: #666;
+    }
+
+    .footer-social {
+      display: flex;
+      gap: 1.5rem;
+    }
+
+    .footer-social a {
+      font-size: 13px;
+      color: #666;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .nav-links {
+        gap: 1rem;
+        font-size: 13px;
+      }
+
+      .hero h1 {
+        font-size: 36px;
+      }
+
+      .hero p {
+        font-size: 16px;
+      }
+
+      .hero-buttons {
+        flex-direction: column;
+      }
+
+      .hero-buttons button {
+        width: 100%;
+      }
+
+      .pricing-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .cta-buttons {
+        flex-direction: column;
+      }
+
+      .cta-buttons button {
+        width: 100%;
+      }
+
+      .footer-bottom {
+        flex-direction: column;
+        gap: 1rem;
+        align-items: flex-start;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .nav-links {
+        display: none;
+      }
+
+      .hero {
+        padding: 3rem 1rem;
+      }
+
+      .hero h1 {
+        font-size: 28px;
+      }
+
+      .trust-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Navigation -->
+  <nav>
+    <div class="nav-container">
+      <div class="nav-brand">Brand</div>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#about">About</a>
+        <a href="#contact">Contact</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <h1>The future of digital experiences</h1>
+    <p>Build faster, ship better, and scale with confidence. A platform designed for modern teams.</p>
+    <div class="hero-buttons">
+      <button class="btn-primary">Get started free</button>
+      <button class="btn-secondary">View demo</button>
+    </div>
+    <div class="hero-image">
+      <span>Hero image / video would go here</span>
+    </div>
+  </section>
+
+  <!-- Trust Section -->
+  <section class="trust-section">
+    <div class="trust-label">Trusted by leading companies</div>
+    <div class="trust-grid">
+      <div class="trust-item">Company 1</div>
+      <div class="trust-item">Company 2</div>
+      <div class="trust-item">Company 3</div>
+      <div class="trust-item">Company 4</div>
+    </div>
+  </section>
+
+  <!-- Features Section -->
+  <section class="features" id="features">
+    <div class="section-header">
+      <h2>Powerful features, simple design</h2>
+      <p>Everything you need to build, deploy, and scale your product with confidence.</p>
+    </div>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Lightning fast</h3>
+        <p>Optimized for performance with sub-100ms response times and global CDN distribution.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <h3>Enterprise security</h3>
+        <p>End-to-end encryption, compliance certifications, and advanced access controls.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <h3>Deep analytics</h3>
+        <p>Real-time insights and detailed reporting to track what matters most.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🔌</div>
+        <h3>Easy integrations</h3>
+        <p>Connect with 200+ tools and services out of the box with robust APIs.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">👥</div>
+        <h3>Team collaboration</h3>
+        <p>Real-time editing, commenting, and workflow management for seamless teamwork.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">🚀</div>
+        <h3>Effortless scaling</h3>
+        <p>From hundreds to billions of requests. Auto-scaling handles growth automatically.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing Section -->
+  <section class="pricing" id="pricing">
+    <div class="section-header">
+      <h2>Transparent pricing</h2>
+      <p>Pick the plan that grows with you. Always transparent, always fair.</p>
+    </div>
+
+    <div class="pricing-grid">
+      <!-- Starter Plan -->
+      <div class="pricing-card">
+        <h3>Starter</h3>
+        <p class="pricing-card-subtitle">Perfect to get started</p>
+        <div class="pricing-price">$29<span>/month</span></div>
+        <p class="pricing-billing">Billed annually. Cancel anytime.</p>
+        <button class="pricing-button">Get started</button>
+        <div class="pricing-features">
+          <div>✓ Up to 10 projects</div>
+          <div>✓ Basic analytics</div>
+          <div>✓ Community support</div>
+          <div>✓ 99.9% uptime SLA</div>
+        </div>
+      </div>
+
+      <!-- Professional Plan (Featured) -->
+      <div class="pricing-card featured">
+        <div class="badge">Most popular</div>
+        <h3>Professional</h3>
+        <p class="pricing-card-subtitle">For growing teams</p>
+        <div class="pricing-price">$99<span>/month</span></div>
+        <p class="pricing-billing">Billed annually. Cancel anytime.</p>
+        <button class="pricing-button">Get started</button>
+        <div class="pricing-features">
+          <div>✓ Unlimited projects</div>
+          <div>✓ Advanced analytics</div>
+          <div>✓ Email & chat support</div>
+          <div>✓ 99.99% uptime SLA</div>
+          <div>✓ Team management</div>
+        </div>
+      </div>
+
+      <!-- Enterprise Plan -->
+      <div class="pricing-card">
+        <h3>Enterprise</h3>
+        <p class="pricing-card-subtitle">Custom solutions</p>
+        <div class="pricing-price">Custom</div>
+        <p class="pricing-billing">Contact sales for pricing</p>
+        <button class="pricing-button">Contact sales</button>
+        <div class="pricing-features">
+          <div>✓ Everything in Professional</div>
+          <div>✓ Dedicated support</div>
+          <div>✓ Custom integrations</div>
+          <div>✓ SLA guarantee</div>
+          <div>✓ On-premise option</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Section -->
+  <section class="cta-section">
+    <h2>Ready to get started?</h2>
+    <p>Join thousands of teams building the future today.</p>
+    <div class="cta-buttons">
+      <button class="btn-primary">Start free trial</button>
+      <button class="btn-secondary">Talk to us</button>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-container">
+      <div class="footer-grid">
+        <div class="footer-section">
+          <h4>Product</h4>
+          <a href="#">Features</a>
+          <a href="#">Pricing</a>
+          <a href="#">Security</a>
+          <a href="#">Roadmap</a>
+        </div>
+        <div class="footer-section">
+          <h4>Company</h4>
+          <a href="#">About</a>
+          <a href="#">Blog</a>
+          <a href="#">Careers</a>
+          <a href="#">Contact</a>
+        </div>
+        <div class="footer-section">
+          <h4>Legal</h4>
+          <a href="#">Privacy</a>
+          <a href="#">Terms</a>
+          <a href="#">Cookies</a>
+          <a href="#">Status</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        <p class="footer-copy">© 2024 Brand. All rights reserved.</p>
+        <div class="footer-social">
+          <a href="#">Twitter</a>
+          <a href="#">LinkedIn</a>
+          <a href="#">GitHub</a>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
