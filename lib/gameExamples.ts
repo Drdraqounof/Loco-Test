@@ -113,7 +113,8 @@ export function loadGameExamples(): GameExample[] {
       }
 
       if (Object.keys(files).length > 0) {
-        const mainFile = fileList.find((f) => f.endsWith(".html")) || fileList[0];
+        const fileNames = Object.keys(files);
+        const mainFile = fileNames.find((f) => f.endsWith(".html")) || fileNames[0];
         const summary = mainFile
           ? createGameSummary(
               folder,

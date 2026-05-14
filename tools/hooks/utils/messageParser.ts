@@ -1,5 +1,7 @@
 // In plain terms: this file pulls useful pieces like code blocks and commands out of AI responses.
 
+import { extractEarthTourPlan, stripEarthTourBlock, type EarthTourPlan } from "@/lib/earthTour";
+
 export interface ParsedResponse {
   commands: string[];
   codeBlocks: Array<{
@@ -7,6 +9,7 @@ export interface ParsedResponse {
     code: string;
   }>;
   cleanText: string;
+  tourPlan: EarthTourPlan | null;
 }
 
 /**
@@ -24,6 +27,10 @@ export function extractMultipleCodeBlocks(
   while ((match = backtickRegex.exec(text)) !== null) {
     const language = (match[1] || "").trim() || "javascript";
     const code = (match[2] || "").trim();
+
+    if (language.toLowerCase() === "loco-tour") {
+      continue;
+    }
     
     if (code && code.length > 0) {
       blocks.push({ language, code });
@@ -35,6 +42,10 @@ export function extractMultipleCodeBlocks(
   while ((match = tildeRegex.exec(text)) !== null) {
     const language = (match[1] || "").trim() || "javascript";
     const code = (match[2] || "").trim();
+
+    if (language.toLowerCase() === "loco-tour") {
+      continue;
+    }
     
     if (code && code.length > 0) {
       blocks.push({ language, code });
@@ -75,6 +86,8 @@ export function stripCodeFromResponse(text: string): string {
     .replace(/^Code Output\n/gm, "")
     .replace(/^Commands\n/gm, "")
     .replace(/✕\n/g, "");
+
+  cleaned = stripEarthTourBlock(cleaned);
   
   return cleaned.trim();
 }
@@ -85,11 +98,13 @@ export function stripCodeFromResponse(text: string): string {
 export function parseResponse(text: string): ParsedResponse {
   const commands = extractTerminalCommands(text);
   const codeBlocks = extractMultipleCodeBlocks(text);
+  const tourPlan = extractEarthTourPlan(text);
   const cleanText = stripCodeFromResponse(text);
   
   return {
     commands,
     codeBlocks,
     cleanText,
+    tourPlan,
   };
 }

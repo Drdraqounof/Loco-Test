@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import { Button } from "@/components/ui/button";
+import CesiumMapShell from "@/components/Cesium/CesiumMapShell";
 import { Settings, Trash2, Mic, Send, X, Copy, Check, Undo2, Play, Pause, Volume2, History, Plus, MessageSquare, Maximize2, Minimize2, ExternalLink } from "lucide-react";
 import { useSpeechRecognition } from "@/tools/hooks/useSpeechRecognition";
 import { useAudioPlayer } from "@/tools/hooks/useAudioPlayer";
@@ -32,6 +33,8 @@ import {
   type ResolvedAssistantMode,
 } from "@/tools/hooks/utils/apiClient";
 import { formatBytes, type AttachmentContextItem } from "@/lib/attachmentContext";
+import { detectCesiumIntent } from "@/lib/cesiumIntent";
+import type { EarthTourPlan } from "@/lib/earthTour";
 import {
   buildYouTubeEmbedUrl,
   normalizeYouTubeAliasName,
@@ -185,6 +188,10 @@ interface PreviewBridgeMessage {
   type: "loco-preview-ready" | "loco-preview-error";
   message?: string;
   errorSource?: string;
+}
+
+interface ActiveEarthTourPlan extends EarthTourPlan {
+  runId: string;
 }
 
 function getAssistantBadge(meta?: Message["meta"]) {
@@ -897,9 +904,10 @@ export default function Home() {
   const [codeLanguage, setCodeLanguage] = useState("javascript");
   const [codeBlocks, setCodeBlocks] = useState<CodeBlock[]>([]);
   const [activeCodeBlockIndex, setActiveCodeBlockIndex] = useState(0);
-  const [terminalView, setTerminalView] = useState<"preview" | "code" | "commands">("code");
+  const [terminalView, setTerminalView] = useState<"preview" | "code" | "commands" | "cesium">("code");
   const [terminalCommands, setTerminalCommands] = useState<string[]>([]);
   const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
+  const [isCesiumFullscreen, setIsCesiumFullscreen] = useState(false);
   const [copiedTarget, setCopiedTarget] = useState<string | null>(null);
   const [suggestedPrompts, setSuggestedPrompts] = useState<Array<{ emoji: string; text: string }>>([]);
   const [lastAudioClip, setLastAudioClip] = useState<LastAudioClip | null>(null);
@@ -924,9 +932,70 @@ export default function Home() {
   const [pendingYouTubeClarification, setPendingYouTubeClarification] = useState<PendingYouTubeClarification | null>(null);
   const [recentYouTubeListens, setRecentYouTubeListens] = useState<RecentYouTubeListen[]>([]);
   const [previewRuntimeIssue, setPreviewRuntimeIssue] = useState<PreviewRuntimeIssue | null>(null);
+  const [isCesiumOpen, setIsCesiumOpen] = useState(false);
+  const [cesiumAutoRotate, setCesiumAutoRotate] = useState(false);
+  const [cesiumRuntimeIssue, setCesiumRuntimeIssue] = useState<PreviewRuntimeIssue | null>(null);
+  const [activeEarthTour, setActiveEarthTour] = useState<ActiveEarthTourPlan | null>(null);
   const [autoFixingPreview, setAutoFixingPreview] = useState(false);
   const activeSessionIdRef = useRef<string | null>(null);
   const autoFixPreviewSignaturesRef = useRef<Set<string>>(new Set());
+
+  const openCesiumEnvironment = (options?: { autoRotate?: boolean; fullscreen?: boolean; reason?: string }) => {
+    console.info("[Cesium] Opening environment.", options?.reason ?? "user request");
+    setIsCesiumOpen(true);
+    setShowTerminal(true);
+    setTerminalView("cesium");
+    setCesiumRuntimeIssue(null);
+    setIsPreviewFullscreen(false);
+
+    if (typeof options?.autoRotate === "boolean") {
+      setCesiumAutoRotate(options.autoRotate);
+    }
+
+    if (typeof options?.fullscreen === "boolean") {
+      setIsCesiumFullscreen(options.fullscreen);
+    }
+  };
+
+  const closeCesiumEnvironment = () => {
+    console.info("[Cesium] Closing environment.");
+    setIsCesiumOpen(false);
+    setCesiumAutoRotate(false);
+    setCesiumRuntimeIssue(null);
+    setIsCesiumFullscreen(false);
+    setActiveEarthTour(null);
+    setShowTerminal(false);
+  };
+
+  const handleCesiumSceneReady = () => {
+    console.info("[Cesium] Scene ready in workspace panel.");
+    setCesiumRuntimeIssue(null);
+  };
+
+  const handleCesiumSceneError = (issue: { message: string; source: string }) => {
+    console.error("[Cesium] Scene error.", issue);
+    setShowTerminal(true);
+    setIsCesiumOpen(true);
+    setCesiumRuntimeIssue({
+      message: issue.message,
+      source: issue.source,
+      capturedAt: new Date().toISOString(),
+    });
+  };
+
+  const activateEarthTour = (tourPlan: EarthTourPlan, reason: string) => {
+    const nextTourPlan: ActiveEarthTourPlan = {
+      ...tourPlan,
+      runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
+
+    setActiveEarthTour(nextTourPlan);
+    openCesiumEnvironment({
+      autoRotate: tourPlan.autoRotate ?? false,
+      fullscreen: tourPlan.fullscreen ?? true,
+      reason,
+    });
+  };
 
   const updateActiveSessionId = (sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
@@ -949,7 +1018,9 @@ export default function Home() {
       const parsed = parseResponse(lastAssistant.content);
       const previewDocument = buildPreviewDocument(parsed.codeBlocks);
       const previewableCodeBlocks = parsed.codeBlocks.filter(isCodePreviewBlock);
-      setShowTerminal(parsed.codeBlocks.length > 0 || parsed.commands.length > 0);
+      const hasWorkspaceContent = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
+
+      setShowTerminal(isCesiumOpen || hasWorkspaceContent);
       setCodeBlocks(parsed.codeBlocks);
       setActiveCodeBlockIndex(0);
       if (previewableCodeBlocks.length > 0) {
@@ -959,7 +1030,9 @@ export default function Home() {
         setExtractedCode("");
         setCodeLanguage("javascript");
       }
-      setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+      if (hasWorkspaceContent) {
+        setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+      }
       setTerminalCommands(parsed.commands);
       return;
     }
@@ -1204,6 +1277,11 @@ export default function Home() {
       setMessages([]);
       syncTerminalFromMessages([]);
       setShowHistory(false);
+      setIsCesiumOpen(false);
+      setCesiumAutoRotate(false);
+      setCesiumRuntimeIssue(null);
+      setIsCesiumFullscreen(false);
+      setActiveEarthTour(null);
       setPreviewRuntimeIssue(null);
       setAutoFixingPreview(false);
       autoFixPreviewSignaturesRef.current.clear();
@@ -1216,6 +1294,11 @@ export default function Home() {
     setMessages([]);
     updateActiveSessionId(null);
     setShowTerminal(false); setExtractedCode(""); setCodeBlocks([]); setActiveCodeBlockIndex(0); setTerminalView("code"); setTerminalCommands([]);
+    setIsCesiumOpen(false);
+    setCesiumAutoRotate(false);
+    setCesiumRuntimeIssue(null);
+    setIsCesiumFullscreen(false);
+    setActiveEarthTour(null);
     setPreviewRuntimeIssue(null);
     setAutoFixingPreview(false);
     autoFixPreviewSignaturesRef.current.clear();
@@ -1758,10 +1841,12 @@ export default function Home() {
       const previewableCodeBlocks = parsed.codeBlocks.filter(isCodePreviewBlock);
       const hasCode = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
 
-      setShowTerminal(hasCode);
+      setShowTerminal(isCesiumOpen || hasCode);
       setCodeBlocks(parsed.codeBlocks);
       setActiveCodeBlockIndex(0);
-      setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+      if (hasCode) {
+        setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+      }
 
       if (previewableCodeBlocks.length > 0) {
         setExtractedCode(previewableCodeBlocks[0].code);
@@ -1872,6 +1957,7 @@ export default function Home() {
       || (pendingPreviewRuntimeIssue
         ? "The live preview failed. Fix the generated code using the captured runtime error."
         : "Analyze the attached files and tell me what matters.");
+    const cesiumIntent = detectCesiumIntent(outboundInput);
     
     try {
       const updated: Message[] = [...messages, { role: "user", content: outboundInput }];
@@ -1889,6 +1975,14 @@ export default function Home() {
       if (enableChess && outboundInput.toLowerCase().includes("chess")) {
         router.push("/experimental/chess");
         return;
+      }
+
+      if (cesiumIntent) {
+        openCesiumEnvironment({
+          autoRotate: cesiumIntent.autoRotate,
+          fullscreen: cesiumIntent.autoRotate,
+          reason: cesiumIntent.reason,
+        });
       }
 
       const youTubeResult = await handleYouTubePlayback(outboundInput);
@@ -1931,12 +2025,18 @@ export default function Home() {
       const parsed = parseResponse(message);
       const previewDocument = buildPreviewDocument(parsed.codeBlocks);
       const previewableCodeBlocks = parsed.codeBlocks.filter(isCodePreviewBlock);
+
+      if (parsed.tourPlan) {
+        activateEarthTour(parsed.tourPlan, parsed.tourPlan.title ?? "assistant earth tour");
+      }
       
       const hasCode = parsed.codeBlocks.length > 0 || parsed.commands.length > 0;
-      setShowTerminal(hasCode);
+      setShowTerminal(isCesiumOpen || Boolean(cesiumIntent) || hasCode);
       setCodeBlocks(parsed.codeBlocks);
       setActiveCodeBlockIndex(0);
-      setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+      if (hasCode) {
+        setTerminalView(previewDocument ? "preview" : previewableCodeBlocks.length > 0 ? "code" : "commands");
+      }
       
       if (previewableCodeBlocks.length > 0) {
         setExtractedCode(previewableCodeBlocks[0].code);
@@ -2009,6 +2109,11 @@ export default function Home() {
     setActiveCodeBlockIndex(0);
     setTerminalView("code");
     setTerminalCommands([]);
+    setIsCesiumOpen(false);
+    setCesiumAutoRotate(false);
+    setCesiumRuntimeIssue(null);
+    setIsCesiumFullscreen(false);
+    setActiveEarthTour(null);
     setPreviewRuntimeIssue(null);
     setAutoFixingPreview(false);
     autoFixPreviewSignaturesRef.current.clear();
@@ -2110,6 +2215,8 @@ export default function Home() {
   const previewDocument = buildPreviewDocument(codeBlocks);
   const hasPreview = Boolean(previewDocument);
   const canShowCode = previewableCodeBlocks.length > 0;
+  const hasWorkspacePanel = showTerminal || isCesiumOpen;
+  const hasAnyWorkspaceTab = isCesiumOpen || hasPreview || canShowCode || terminalCommands.length > 0;
 
   useEffect(() => {
     if (!isPreviewFullscreen) {
@@ -2127,10 +2234,31 @@ export default function Home() {
   }, [isPreviewFullscreen]);
 
   useEffect(() => {
+    if (!isCesiumFullscreen) {
+      return;
+    }
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsCesiumFullscreen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isCesiumFullscreen]);
+
+  useEffect(() => {
     if (!showTerminal || !hasPreview) {
       setIsPreviewFullscreen(false);
     }
   }, [showTerminal, hasPreview]);
+
+  useEffect(() => {
+    if (!isCesiumOpen) {
+      setIsCesiumFullscreen(false);
+    }
+  }, [isCesiumOpen]);
 
   useEffect(() => {
     if (!previewDocument) {
@@ -2736,7 +2864,7 @@ export default function Home() {
 
         {/* Terminal Panel */}
         <AnimatePresence>
-          {showTerminal && (
+          {hasWorkspacePanel && (
             <motion.div
               initial={{ opacity: 0, x: 60 }} 
               animate={{ opacity: 1, x: 0 }} 
@@ -2746,15 +2874,25 @@ export default function Home() {
             >
               <div className="flex items-center justify-between px-5 py-3 border-b border-border/50">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className="text-sm font-medium text-foreground">Workspace Preview</span>
+                  <span className="text-sm font-medium text-foreground">Workspace Panel</span>
                 </div>
-                <Button variant="ghost" size="icon" onClick={() => setShowTerminal(false)} className="h-7 w-7 text-muted-foreground hover:text-foreground">
+                <Button variant="ghost" size="icon" onClick={closeCesiumEnvironment} className="h-7 w-7 text-muted-foreground hover:text-foreground">
                   <X className="w-4 h-4" />
                 </Button>
               </div>
               <div className="flex flex-1 min-h-0 flex-col p-5">
-                {(hasPreview || canShowCode || terminalCommands.length > 0) && (
+                {hasAnyWorkspaceTab && (
                   <div className="mb-4 flex flex-wrap gap-2">
+                    {isCesiumOpen && (
+                      <Button
+                        variant={terminalView === "cesium" ? "default" : "surface"}
+                        size="sm"
+                        className="h-7 px-3 text-xs"
+                        onClick={() => setTerminalView("cesium")}
+                      >
+                        Cesium
+                      </Button>
+                    )}
                     {hasPreview && (
                       <Button
                         variant={terminalView === "preview" ? "default" : "surface"}
@@ -2785,6 +2923,99 @@ export default function Home() {
                         Commands
                       </Button>
                     )}
+                  </div>
+                )}
+
+                {terminalView === "cesium" && isCesiumOpen && !isCesiumFullscreen && (
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">Cesium Environment</div>
+                        <p className="mt-1 text-xs text-muted-foreground">Embedded globe scene for planet rendering and rotation control.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="surface"
+                          size="sm"
+                          className="h-7 px-3 text-xs"
+                          onClick={() => {
+                            setCesiumAutoRotate((current) => {
+                              const nextValue = !current;
+
+                              console.info(`[Cesium] Auto-rotation ${nextValue ? "enabled" : "disabled"} from panel.`);
+                              return nextValue;
+                            });
+                          }}
+                        >
+                          {cesiumAutoRotate ? "Pause Spin" : "Spin Planet"}
+                        </Button>
+                        <Button
+                          variant="surface"
+                          size="sm"
+                          className="h-7 px-3 text-xs"
+                          onClick={() => setIsCesiumFullscreen(true)}
+                        >
+                          <Maximize2 className="mr-1.5 h-3.5 w-3.5" /> Full Screen
+                        </Button>
+                        <Button
+                          variant="surface"
+                          size="sm"
+                          className="h-7 px-3 text-xs"
+                          onClick={() => {
+                            setIsCesiumOpen(false);
+                            setCesiumAutoRotate(false);
+                            setCesiumRuntimeIssue(null);
+                            setIsCesiumFullscreen(false);
+                            setActiveEarthTour(null);
+
+                            if (hasPreview) {
+                              setTerminalView("preview");
+                              return;
+                            }
+
+                            if (canShowCode) {
+                              setTerminalView("code");
+                              return;
+                            }
+
+                            if (terminalCommands.length > 0) {
+                              setTerminalView("commands");
+                              return;
+                            }
+
+                            setShowTerminal(false);
+                          }}
+                        >
+                          Hide Environment
+                        </Button>
+                      </div>
+                    </div>
+
+                    {cesiumRuntimeIssue && (
+                      <div className="mb-3 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-destructive">Cesium Error</p>
+                            <p className="mt-1 text-xs text-muted-foreground">Scene setup failed. Check logs and environment values, then retry.</p>
+                          </div>
+                          <Button variant="surface" size="sm" className="h-7 px-3 text-xs" onClick={() => setCesiumRuntimeIssue(null)}>
+                            Clear
+                          </Button>
+                        </div>
+                        <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-background/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-destructive">
+                          {cesiumRuntimeIssue.message}
+                        </pre>
+                      </div>
+                    )}
+
+                    <div className="flex flex-1 min-h-0 overflow-hidden rounded-xl border border-border bg-background shadow-sm">
+                      <CesiumMapShell
+                        autoRotate={cesiumAutoRotate}
+                        onSceneReady={handleCesiumSceneReady}
+                        onSceneError={handleCesiumSceneError}
+                        tourPlan={activeEarthTour}
+                      />
+                    </div>
                   </div>
                 )}
 
@@ -2868,7 +3099,7 @@ export default function Home() {
                   </div>
                 )}
                 
-                {!canShowCode && terminalCommands.length === 0 && !hasPreview && (
+                {!canShowCode && terminalCommands.length === 0 && !hasPreview && !isCesiumOpen && (
                   <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-sm">
                     <span className="text-4xl mb-4 opacity-30">📟</span>
                     <p className="font-medium mb-2">No previewable code found</p>
@@ -2885,6 +3116,70 @@ export default function Home() {
       <audio ref={audioRef} autoPlay controls style={{ display: "none" }} />
 
       <AnimatePresence>
+        {isCesiumFullscreen && isCesiumOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-background/95 backdrop-blur-md"
+          >
+            <div className="flex h-full flex-col p-4 sm:p-6">
+              <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl border border-border/60 bg-card/80 px-4 py-3 shadow-xl">
+                <div>
+                  <div className="text-sm font-medium text-foreground">Full Screen Planet View</div>
+                  <p className="mt-1 text-xs text-muted-foreground">The Cesium environment is active full screen. Press Escape to return to the workspace panel.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="surface"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => {
+                      setCesiumAutoRotate((current) => {
+                        const nextValue = !current;
+
+                        console.info(`[Cesium] Auto-rotation ${nextValue ? "enabled" : "disabled"} from full screen.`);
+                        return nextValue;
+                      });
+                    }}
+                  >
+                    {cesiumAutoRotate ? "Pause Spin" : "Spin Planet"}
+                  </Button>
+                  <Button onClick={() => setIsCesiumFullscreen(false)} variant="surface" size="sm" className="gap-1.5">
+                    <Minimize2 className="w-3.5 h-3.5" /> Exit Full Screen
+                  </Button>
+                </div>
+              </div>
+
+              {cesiumRuntimeIssue && (
+                <div className="mb-4 rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-destructive">Cesium Error</p>
+                      <p className="mt-1 text-xs text-muted-foreground">Scene setup failed. Check logs and environment values, then retry.</p>
+                    </div>
+                    <Button variant="surface" size="sm" className="h-7 px-3 text-xs" onClick={() => setCesiumRuntimeIssue(null)}>
+                      Clear
+                    </Button>
+                  </div>
+                  <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-background/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-destructive">
+                    {cesiumRuntimeIssue.message}
+                  </pre>
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-border bg-background shadow-2xl">
+                <CesiumMapShell
+                  autoRotate={cesiumAutoRotate}
+                  onSceneReady={handleCesiumSceneReady}
+                  onSceneError={handleCesiumSceneError}
+                  tourPlan={activeEarthTour}
+                />
+              </div>
+            </div>
+          </motion.div>
+        )}
+
         {isPreviewFullscreen && hasPreview && (
           <motion.div
             initial={{ opacity: 0 }}

@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "cesium:sync-assets": "node tools/scripts/sync-cesium-assets.mjs",
+    "postinstall": "npm run cesium:sync-assets",
     "electron": "electron .",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && npm run electron\"",
     "electron:build": "npm run build && npm run electron:pack",
@@ -27,6 +29,7 @@
   },
   "dependencies": {
     "@prisma/client": "^5.7.0",
+    "cesium": "^1.127.0",
     "framer-motion": "^12.35.0",
     "googleapis": "^144.0.0",
     "lucide-react": "^0.577.0",
@@ -35,6 +38,8 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-markdown": "^10.1.0",
+    "resium": "^1.19.0",
+    "three": "^0.181.1",
     "undici": "^7.24.5"
   },
   "devDependencies": {
