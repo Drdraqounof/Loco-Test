@@ -296,15 +296,13 @@ The frontend and settings UI expose assistant-routing concepts such as:
 - `loco`
 - `claude`
 
-However, the currently verified main server route is still clearly OpenAI-centered in the request handling path I reviewed. The chat route section that parses the request does not currently show `assistantMode` being consumed alongside the other request fields.
+`POST /api` consumes `assistantMode` through `lib/assistant/routing.ts`:
 
-That means the architecture should be described carefully:
+- `loco` → OpenAI
+- `claude` → Claude when `CLAUDE_API_KEY` is set, otherwise OpenAI with `fallbackReason`
+- `auto` → Claude for code/game heuristics when available, otherwise OpenAI
 
-- the product direction includes model routing and code-vs-explanation specialization
-- the current verified server implementation is OpenAI-first with review and fallback behavior
-- the UI and earlier docs describe a broader routing plan than the verified route path proves today
-
-This is an important distinction between intended architecture and confirmed runtime architecture.
+The response includes a `routing` object matching the client contract in `tools/hooks/utils/apiClient.ts`.
 
 ## 5.6 Model Layer Strengths
 
@@ -435,15 +433,13 @@ The architectural rule is correct: secrets live in environment variables, not cl
 
 ## 7.3 Recommended Next Architectural Moves
 
-1. Split `app/api/route.ts` into feature coordinators:
-   - chat pipeline
-   - calendar orchestration
-   - memory orchestration
-   - model/provider orchestration
-2. Formalize a provider abstraction for chat, TTS, and STT so routing logic is explicit and testable.
-3. Add user scoping to integration records if multi-user support is expected.
-4. Separate assistant-domain tables and workforce-domain tables more clearly at the service boundary, even if they remain in one database.
-5. Reconcile the documented assistant-routing behavior with the actual server implementation.
+Status as of July 30, 2026:
+
+1. **Done** — Split helpers out of `app/api/route.ts` into `lib/orchestration/*` (calendar heuristics, request heuristics, review, OpenAI transport) while keeping `POST` as the sequencer.
+2. **Done** — Provider abstraction in `lib/providers` for chat, TTS, and STT (`chat.ts`, `tts.ts`, `stt.ts`).
+3. **Done** — User scoping on `GoogleCalendarConnection` and `YouTubeConnection` via `userId` + default app user (`lib/assistant/appUser.ts`).
+4. **Done** — Workforce service boundary in `lib/workforce` (separate from chat orchestration; schema still shared).
+5. **Done** — `assistantMode` is consumed by `POST /api` through `lib/assistant/routing.ts` and returned as `routing` metadata.
 
 ---
 

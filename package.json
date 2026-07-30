@@ -18,6 +18,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
+    "ai:schema": "node scripts/generate-ai-schema.mjs",
+    "ai:sync-prompts": "node scripts/sync-prompts.mjs",
+    "test:ai": "node scripts/test-ai-architecture.mjs",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d",
     "docker:up:build": "docker compose up -d --build",
@@ -40,7 +43,8 @@
     "react-markdown": "^10.1.0",
     "resium": "^1.19.0",
     "three": "^0.181.1",
-    "undici": "^7.24.5"
+    "undici": "^7.24.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

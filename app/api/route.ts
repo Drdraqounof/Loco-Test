@@ -1,14 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
-
 import { NextRequest, NextResponse } from "next/server";
-import { Agent, type Dispatcher } from "undici";
 
 // In plain terms: this is the server-side brain for the main chat feature.
 // It receives user messages, pulls in memory and attachment context,
 // routes the request through the app's workflow, and returns the final AI response.
 import {
   formatCodeWithLineNumbers,
-  findElements,
   buildCodeSummary,
   extractLineNumbersFromResponse,
   validateLineNumbers
@@ -55,24 +51,42 @@ import {
   type AttachmentContextItem,
 } from "@/lib/attachmentContext";
 import { looksLikePlanetTourRequest } from "@/lib/earthTour";
-import { isPersistenceUnavailableError } from "@/lib/persistence";
+import { withOptionalPersistence } from "@/lib/orchestration/openaiTransport";
+import { reviewLocoResponse } from "@/lib/orchestration/review";
+import {
+  formatEventSuccessMessage,
+  formatLiveCalendarDeleteConfirmation,
+  formatLiveCalendarEventsMessage,
+  formatRememberedEventsMessage,
+  fallbackCalendarTitleFromRequest,
+  mergeCalendarClarificationReply,
+  resolveCalendarDayRange,
+} from "@/lib/orchestration/calendarHeuristics";
+import {
+  getUserMessageBeforeLatestAssistant,
+  isCancellationReply,
+  looksLikeCalendarCreateRequest,
+  looksLikeCalendarMemoryQuestion,
+  looksLikeCodeRequest,
+  looksLikeGameRequest,
+  looksLikeLiveCalendarDeleteRequest,
+  looksLikeLiveCalendarReadRequest,
+  looksLikeReplyDraftRequest,
+  previousAssistantAskedLiveDeleteConfirmation,
+} from "@/lib/orchestration/requestHeuristics";
+import type { Message } from "@/lib/orchestration/types";
+import { callClaudeChat, callOpenAIChat } from "@/lib/providers/chat";
+import { synthesizeSpeech } from "@/lib/providers/tts";
+import { resolveAssistantRouting } from "@/lib/assistant/routing";
+import { assembleStatelessAiContext } from "@/lib/ai/context";
+import { getPrompt } from "@/lib/ai/prompts";
+import { logAiInteraction } from "@/lib/ai/logging";
+import { MemoryFactSchema, validateWithSchema } from "@/lib/ai/validation";
 import { loadGameExamples, formatGameExamplesForContext } from "@/lib/gameExamples";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY;
-const AI_PROVIDER = process.env.AI_PROVIDER || "gemini";
-const TTS_PROVIDER = process.env.TTS_PROVIDER || "openai";
 const LIVE_CALENDAR_DELETE_MARKER = "Google Calendar delete confirmation ready.";
-const OPENAI_CA_CERT_PATH = process.env.OPENAI_CA_CERT_PATH;
-const OPENAI_ALLOW_INSECURE_TLS = process.env.OPENAI_ALLOW_INSECURE_TLS === "true";
-const CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
-const CLAUDE_MODEL = "claude-3-5-sonnet-20241022";
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
-const GEMINI_MODEL = "gemini-2.0-flash";
-
-let openAIDispatcher: Dispatcher | null | undefined;
-let openAIInsecureFallbackDispatcher: Dispatcher | undefined;
 
 const RESOURCES = {
   javascript: [
@@ -120,942 +134,6 @@ const RESOURCES = {
   ],
 };
 
-interface Message {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
-
-interface OpenAIChatOptions {
-  model?: string;
-  maxTokens?: number;
-  temperature?: number;
-  responseFormat?: { type: "json_object" };
-}
-
-interface PipelineReviewResult {
-  approved: boolean;
-  matchesUserRequest: boolean;
-  worksLikely: boolean;
-  updatedUserQuery: string;
-  reviewerNotes: string;
-  fixes: string[];
-}
-
-const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
-const OPENAI_DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
-
-function isTlsCertificateError(error: unknown) {
-  const candidate = error as { code?: string; cause?: { code?: string } } | null;
-  const code = candidate?.code || candidate?.cause?.code;
-  return code === "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" || code === "SELF_SIGNED_CERT_IN_CHAIN" || code === "DEPTH_ZERO_SELF_SIGNED_CERT";
-}
-
-function getOpenAIDispatcher() {
-  if (openAIDispatcher !== undefined) {
-    return openAIDispatcher;
-  }
-
-  if (OPENAI_CA_CERT_PATH) {
-    if (!existsSync(OPENAI_CA_CERT_PATH)) {
-      throw new Error(`OPENAI_CA_CERT_PATH does not exist: ${OPENAI_CA_CERT_PATH}`);
-    }
-
-    openAIDispatcher = new Agent({
-      connect: {
-        ca: readFileSync(OPENAI_CA_CERT_PATH, "utf8"),
-      },
-    });
-    return openAIDispatcher;
-  }
-
-  if (OPENAI_ALLOW_INSECURE_TLS && process.env.NODE_ENV !== "production") {
-    openAIDispatcher = new Agent({
-      connect: {
-        rejectUnauthorized: false,
-      },
-    });
-    return openAIDispatcher;
-  }
-
-  openAIDispatcher = null;
-  return openAIDispatcher;
-}
-
-function getOpenAIInsecureFallbackDispatcher() {
-  if (!openAIInsecureFallbackDispatcher) {
-    openAIInsecureFallbackDispatcher = new Agent({
-      connect: {
-        rejectUnauthorized: false,
-      },
-    });
-  }
-
-  return openAIInsecureFallbackDispatcher;
-}
-
-function shouldRetryOpenAIWithInsecureTls(error: unknown) {
-  return isTlsCertificateError(error)
-    && process.env.NODE_ENV !== "production"
-    && !OPENAI_CA_CERT_PATH
-    && !OPENAI_ALLOW_INSECURE_TLS;
-}
-
-async function fetchOpenAI(url: string, init: RequestInit) {
-  const dispatcher = getOpenAIDispatcher();
-
-  try {
-    if (!dispatcher) {
-      return await fetch(url, init);
-    }
-
-    return await fetch(url, {
-      ...init,
-      dispatcher,
-    } as RequestInit & { dispatcher: Dispatcher });
-  } catch (error) {
-    if (shouldRetryOpenAIWithInsecureTls(error)) {
-      console.warn(
-        "OpenAI TLS validation failed in local development. Retrying once with rejectUnauthorized=false. Configure NODE_EXTRA_CA_CERTS or OPENAI_CA_CERT_PATH for an explicit trust chain."
-      );
-
-      try {
-        return await fetch(url, {
-          ...init,
-          dispatcher: getOpenAIInsecureFallbackDispatcher(),
-        } as RequestInit & { dispatcher: Dispatcher });
-      } catch (retryError) {
-        error = retryError;
-      }
-    }
-
-    if (isTlsCertificateError(error)) {
-      throw new Error(
-        "OpenAI TLS validation failed. This is usually a local certificate trust issue, not an OpenAI token balance issue. Configure NODE_EXTRA_CA_CERTS before starting the dev server, set OPENAI_CA_CERT_PATH to a PEM file for your local root certificate, or for local development only set OPENAI_ALLOW_INSECURE_TLS=true and restart the dev server."
-      );
-    }
-
-    throw error;
-  }
-}
-
-async function withOptionalPersistence<T>(
-  label: string,
-  action: () => Promise<T>,
-  fallback: T
-): Promise<{ value: T; available: boolean }> {
-  try {
-    return {
-      value: await action(),
-      available: true,
-    };
-  } catch (error) {
-    if (isPersistenceUnavailableError(error)) {
-      console.warn(`${label} unavailable; continuing without persistence.`, error);
-      return {
-        value: fallback,
-        available: false,
-      };
-    }
-
-    throw error;
-  }
-}
-
-function normalizeModelOutput(content: unknown) {
-  if (typeof content === "string") {
-    return content.trim();
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") {
-          return part;
-        }
-
-        if (part && typeof part === "object" && "text" in part && typeof part.text === "string") {
-          return part.text;
-        }
-
-        return "";
-      })
-      .join("")
-      .trim();
-  }
-
-  return "";
-}
-
-async function callOpenAIChat(messages: Message[], options: OpenAIChatOptions = {}) {
-  const response = await fetchOpenAI(OPENAI_CHAT_COMPLETIONS_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: options.model || OPENAI_DEFAULT_MODEL,
-      messages,
-      max_tokens: options.maxTokens ?? 1000,
-      temperature: options.temperature ?? 0.7,
-      ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    console.error("OpenAI API error:", errorData);
-    throw new Error(errorData.error?.message || "Failed to get AI response");
-  }
-
-  const data = await response.json();
-  const content = normalizeModelOutput(data.choices?.[0]?.message?.content);
-
-  if (!content) {
-    throw new Error("No response from AI");
-  }
-
-  return content;
-}
-
-async function callClaudeChat(
-  messages: Message[],
-  options: { maxTokens?: number; temperature?: number } = {}
-): Promise<string> {
-  if (!CLAUDE_API_KEY) {
-    throw new Error("Claude API key not configured");
-  }
-
-  const claudeMessages = messages
-    .filter((msg) => msg.role !== "system")
-    .map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
-
-  const systemMessages = messages
-    .filter((msg) => msg.role === "system")
-    .map((msg) => msg.content)
-    .join("\n\n");
-
-  const response = await fetch(CLAUDE_API_URL, {
-    method: "POST",
-    headers: {
-      "x-api-key": CLAUDE_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: options.maxTokens ?? 1000,
-      ...(systemMessages ? { system: systemMessages } : {}),
-      messages: claudeMessages,
-      temperature: options.temperature ?? 0.7,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    // Silent failure - will fall back to OpenAI
-    throw new Error(
-      errorData.error?.message || "Failed to get response from Claude"
-    );
-  }
-
-  const data = await response.json();
-  const content = data.content?.[0]?.text;
-
-  if (!content) {
-    throw new Error("No response from Claude");
-  }
-
-  return content;
-}
-
-async function callGeminiChat(
-  messages: Message[],
-  options: { maxTokens?: number; temperature?: number } = {}
-): Promise<string> {
-  if (!GEMINI_API_KEY) {
-    throw new Error("Gemini API key not configured");
-  }
-
-  // Convert messages to Gemini format
-  const geminiContents: Array<{ role: string; parts: Array<{ text: string }> }> =
-    [];
-
-  // Collect system and regular messages
-  const regularMessages = messages.filter((msg) => msg.role !== "system");
-  const systemMessages = messages.filter((msg) => msg.role === "system");
-
-  // Combine system messages but truncate for Gemini (it has strict limits)
-  let systemContext = "";
-  if (systemMessages.length > 0) {
-    const fullSystem = systemMessages.map((msg) => msg.content).join("\n\n");
-    // Keep only the core personality and rules, truncate memory and detailed instructions
-    const lines = fullSystem.split("\n");
-    const essentialLines = lines.slice(0, 80); // Keep first ~80 lines (core instructions)
-    systemContext = essentialLines.join("\n");
-    
-    // Ensure we have key instructions
-    if (!systemContext.includes("PERSONALITY")) {
-      systemContext = "You are Loco, an intelligent assistant helping with code and programming.\nBe clear, concise, and encouraging.\n\n" + systemContext;
-    }
-  }
-
-  // Build the contents array
-  for (const msg of regularMessages) {
-    let content = msg.content;
-
-    // Prepend (truncated) system instructions to the first user message
-    if (msg.role === "user" && systemContext && geminiContents.length === 0) {
-      content = `${systemContext}\n\n---\n\nUser request:\n${content}`;
-    }
-
-    geminiContents.push({
-      role: msg.role === "user" ? "user" : "model",
-      parts: [{ text: content }],
-    });
-  }
-
-  const response = await fetch(
-    `${GEMINI_API_URL}?key=${GEMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: GEMINI_MODEL,
-        contents: geminiContents,
-        generationConfig: {
-          maxOutputTokens: options.maxTokens ?? 1000,
-          temperature: options.temperature ?? 0.7,
-        },
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    console.error("Gemini API error:", errorData);
-    throw new Error(
-      errorData.error?.message || "Failed to get response from Gemini"
-    );
-  }
-
-  const data = await response.json();
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-  if (!content) {
-    throw new Error("No response from Gemini");
-  }
-
-  return content;
-}
-
-function parsePipelineReviewResult(content: string): PipelineReviewResult {
-  let parsed: Partial<PipelineReviewResult> = {};
-
-  try {
-    parsed = JSON.parse(content) as Partial<PipelineReviewResult>;
-  } catch (error) {
-    console.error("Failed to parse pipeline review result:", error, content);
-    return {
-      approved: false,
-      matchesUserRequest: false,
-      worksLikely: false,
-      updatedUserQuery: "Revise the answer so it fully satisfies the user request and fixes the identified issues.",
-      reviewerNotes: "The internal reviewer returned an invalid result. Regenerate the answer more clearly and completely.",
-      fixes: ["Return a complete answer.", "Ensure the response is specific to the user's request.", "Provide well-formed code blocks when code is needed."],
-    };
-  }
-
-  return {
-    approved: Boolean(parsed.approved),
-    matchesUserRequest: Boolean(parsed.matchesUserRequest),
-    worksLikely: Boolean(parsed.worksLikely),
-    updatedUserQuery: typeof parsed.updatedUserQuery === "string" && parsed.updatedUserQuery.trim().length > 0
-      ? parsed.updatedUserQuery.trim()
-      : "Revise the answer so it fully satisfies the user request and fixes the identified issues.",
-    reviewerNotes: typeof parsed.reviewerNotes === "string" && parsed.reviewerNotes.trim().length > 0
-      ? parsed.reviewerNotes.trim()
-      : "The answer needs revision.",
-    fixes: Array.isArray(parsed.fixes)
-      ? parsed.fixes.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
-      : [],
-  };
-}
-
-async function reviewLocoResponse(input: {
-  systemPrompt: string;
-  recentMessages: Message[];
-  latestUserMessage: string;
-  candidateResponse: string;
-  attachmentContext: string;
-  previewRuntimeIssueContext: string;
-  codeSummary: string;
-  formattedCode: string;
-  currentLanguage: string;
-}) {
-  const reviewPrompt = `You are Loco's internal QA reviewer. Review the draft response against the latest user request.
-
-Decide whether the response likely works and whether it actually satisfies what the user asked for.
-
-Rules:
-- Be strict.
-- If runtime feedback or sandbox error details are present, treat them as real failures.
-- If the answer asks for packages, setup steps, imports, or file placement that are missing, mark it as not likely to work.
-- If the response is incomplete, generic, or does not directly fulfill the request, mark it as not approved.
-- If the response is acceptable, keep updatedUserQuery focused and concise.
-- Return JSON only.
-
-Return this exact shape:
-{
-  "approved": boolean,
-  "matchesUserRequest": boolean,
-  "worksLikely": boolean,
-  "updatedUserQuery": string,
-  "reviewerNotes": string,
-  "fixes": string[]
-}`;
-
-  const reviewMessages: Message[] = [
-    { role: "system", content: reviewPrompt },
-    { role: "system", content: `PRIMARY LOCO SYSTEM PROMPT:\n${input.systemPrompt}` },
-    ...(input.attachmentContext ? [{ role: "system" as const, content: `ATTACHMENT CONTEXT:\n${input.attachmentContext}` }] : []),
-    ...(input.previewRuntimeIssueContext ? [{ role: "system" as const, content: input.previewRuntimeIssueContext }] : []),
-    ...(input.codeSummary ? [{ role: "system" as const, content: `CODE SUMMARY:\n${input.codeSummary}` }] : []),
-    ...(input.formattedCode ? [{ role: "system" as const, content: `CURRENT CODE WITH LINE NUMBERS:\n${input.formattedCode}` }] : []),
-    { role: "system", content: `CURRENT LANGUAGE: ${input.currentLanguage}` },
-    ...input.recentMessages,
-    { role: "system", content: `LATEST USER REQUEST:\n${input.latestUserMessage}` },
-    { role: "assistant", content: input.candidateResponse },
-  ];
-
-  const reviewResponse = await callOpenAIChat(reviewMessages, {
-    temperature: 0.1,
-    maxTokens: 500,
-    responseFormat: { type: "json_object" },
-  });
-
-  return parsePipelineReviewResult(reviewResponse);
-}
-
-function formatEventSuccessMessage(event: {
-  title: string;
-  startIso: Date;
-  endIso: Date;
-  timeZone: string;
-  htmlLink?: string | null;
-}) {
-  const startFormatter = new Intl.DateTimeFormat("en-US", {
-    dateStyle: "full",
-    timeStyle: "short",
-    timeZone: event.timeZone,
-  });
-  const endFormatter = new Intl.DateTimeFormat("en-US", {
-    timeStyle: "short",
-    timeZone: event.timeZone,
-  });
-
-  return `Your event is on the calendar.\n\n- Title: ${event.title}\n- Starts: ${startFormatter.format(event.startIso)}\n- Ends: ${endFormatter.format(event.endIso)}\n- Time zone: ${event.timeZone}${event.htmlLink ? `\n- Link: ${event.htmlLink}` : ""}`;
-}
-
-function isCancellationReply(text: string) {
-  return /^(no|cancel|never mind|dont|don't add it|stop)\b/i.test(text.trim());
-}
-
-function looksLikeReplyDraftRequest(text: string) {
-  const normalized = normalizeWhitespace(text);
-
-  if (!normalized) {
-    return false;
-  }
-
-  const draftingPattern = /\b(how should i respond|how do i respond|help me respond|help me reply|draft(?: me)?(?: a)? reply|draft(?: me)?(?: an)? email|write(?: me)?(?: a)? reply|write(?: me)?(?: an)? email|what should i say|how should i answer|respond to this|reply to this|write back|send back)\b/i;
-  const emailThreadPattern = /\b(?:from|to|subject):\b|\b(?:happy monday|looking forward to|let me know what works|availability below|don't hesitate to reach out|cheers,)\b/i;
-
-  return draftingPattern.test(normalized) || (normalized.includes("@") && emailThreadPattern.test(normalized));
-}
-
-function looksLikeCalendarMemoryQuestion(text: string) {
-  return /(what|which|show|list|remember|remind me)[\s\S]*(calendar|event|events|meeting|meetings|appointment|appointments|scheduled|schedule)/i.test(
-    text.trim()
-  );
-}
-
-function formatRememberedEventsMessage(
-  events: Array<{
-    title: string;
-    startIso: Date;
-    endIso: Date;
-    timeZone: string;
-    location?: string | null;
-    htmlLink?: string | null;
-  }>
-) {
-  if (events.length === 0) {
-    return "I don't have any saved calendar events in memory yet.";
-  }
-
-  return `Here are the most recent calendar events I remember from Loco:\n\n${events
-    .map((event) => {
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        dateStyle: "full",
-        timeStyle: "short",
-        timeZone: event.timeZone,
-      });
-
-      return `- ${event.title} on ${formatter.format(event.startIso)}${event.location ? ` at ${event.location}` : ""}${event.htmlLink ? `\n  Link: ${event.htmlLink}` : ""}`;
-    })
-    .join("\n")}`;
-}
-
-function fallbackCalendarTitleFromRequest(text: string) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  const patterns = [
-    /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:on\s+my\s+calend(?:a|e)r\s+)?to\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
-    /(?:remind(?: me)?(?: to)?|reminder)\s+(?:on\s+my\s+calend(?:a|e)r\s+)?to\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
-    /(?:remind(?: me)?(?: to)?|reminder)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|tonight|later\s+today|next|this)\b|$)/i,
-    /(?:reminder|event|appointment|meeting)\s+(?:for|about)\s+(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
-    /(?:set[- ]?up|schedule|add|create|plan|book|put)\s+(?:a\s+)?(?:reminder|event|appointment|meeting)\s+(?:for|about)?\s*(.+?)(?=\s+(?:on|at|around|tomorrow|today|next|this)\b|$)/i,
-    /(?:for)\s+(.+?)(?=\s+(?:on|at|around)\b|$)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = normalized.match(pattern);
-    const candidate = match?.[1]
-      ?.replace(/^(?:a|an|the|my)\s+/i, "")
-      ?.replace(/^on\s+my\s+calend(?:a|e)r\s+to\s+/i, "")
-      .replace(/\s+(?:please|pls)$/i, "")
-      .trim();
-    if (candidate) {
-      return candidate.charAt(0).toUpperCase() + candidate.slice(1);
-    }
-  }
-
-  return "Reminder";
-}
-
-function normalizeWhitespace(text: string) {
-  return text.replace(/\s+/g, " ").trim();
-}
-
-function looksLikeCalendarCreateRequest(text: string) {
-  const normalized = normalizeWhitespace(text);
-  return /\b(remind(?: me)?(?: to)?|reminder|schedule|add|create|book|set[- ]?up|put|plan)\b/i.test(normalized)
-    && /\b(calendar|calender|event|events|appointment|appointments|meeting|meetings|today|tomorrow|tonight|this\s+(?:morning|afternoon|evening|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?|around\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b/i.test(normalized);
-}
-
-function looksLikeLiveCalendarReadRequest(text: string) {
-  const normalized = normalizeWhitespace(text);
-  if (looksLikeCalendarCreateRequest(normalized)) {
-    return false;
-  }
-
-  return /(what(?:'s| is)|show|list|tell me|how busy)[\s\S]*(calendar|calender|schedule|agenda|events?)/i.test(normalized)
-    || /(calendar|calender|schedule|agenda|events?)[\s\S]*(today|tomorrow|tonight|this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(normalized);
-}
-
-function looksLikeLiveCalendarDeleteRequest(text: string) {
-  const normalized = normalizeWhitespace(text);
-  return /(remove|delete|clear|cancel)[\s\S]*(event|events|meeting|meetings|appointment|appointments)/i.test(normalized)
-    && /(calendar|calender|schedule|agenda|today|tomorrow|tonight|this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.test(normalized);
-}
-
-function previousAssistantAskedLiveDeleteConfirmation(messages: Array<{ role: string; content: string }>) {
-  const previousAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-  return previousAssistant?.content.includes(LIVE_CALENDAR_DELETE_MARKER) ?? false;
-}
-
-function getUserMessageBeforeLatestAssistant(messages: Array<{ role: string; content: string }>) {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index]?.role === "assistant") {
-      for (let candidate = index - 1; candidate >= 0; candidate -= 1) {
-        if (messages[candidate]?.role === "user") {
-          return messages[candidate].content;
-        }
-      }
-      break;
-    }
-  }
-
-  return null;
-}
-
-function isTimeOnlyCalendarReply(text: string) {
-  return /^\d{1,2}(?::\d{2})?\s*(?:am|pm)?$/i.test(text.trim());
-}
-
-function looksLikeCodeRequest(text: string): boolean {
-  const codeKeywords = [
-    /\b(write|generate|create|build|code)\b.*(?:function|method|component|script|class|code|snippet|helper)/i,
-    /\b(generate|create|write).*(?:javascript|typescript|python|java|c\+\+|rust|go|php|sql|html|css|react|vue|angular)\b/i,
-    /\b(refactor|optimize|fix|debug)\b.*(?:code|function|method|logic)\b/i,
-    /\bcode\s(?:for|to|that)/i,
-    /(?:how|can you|please)\s+(?:write|create|generate|build).*(?:code|function|component|script)/i,
-    /\bfunction\b|\bclass\b|\bcomponent\b|\bhelper\b|\bmodule\b/i,
-  ];
-
-  return codeKeywords.some((keyword) => keyword.test(text));
-}
-
-function looksLikeGameRequest(text: string): boolean {
-  const gameKeywords = [
-    // Game creation
-    /\b(create|build|make|write|generate)\b.*\bgame\b/i,
-    /\bgame\b.*\b(create|build|make|write|generate)\b/i,
-    /\b(shooter|platformer|puzzle|rpg|arcade|retro)\b.*\bgame\b/i,
-    /\bgame\b.*\b(shooter|platformer|puzzle|rpg|arcade|retro)\b/i,
-    /\b(canvas|html5|webgl)\b.*\bgame\b/i,
-    /\bplayable\b.*(?:game|prototype)/i,
-    
-    // Game modifications and additions
-    /\b(add|implement|create|build|make|improve|enhance)\b.*\b(enemies|enemy|boss|wave|level|feature|mechanic|animation|effect|particle|ui|menu)/i,
-    /\b(enemies|enemy|boss|waves|levels|mechanics|animations)\b.*\b(to|for|in).*\bgame\b/i,
-    /\b(game mechanics|game feature|game element|enemy|boss|wave|level|scoring|health|collision)\b/i,
-    /\b(2d|3d|html5|canvas|shooter|platformer|puzzle|arcade)\b/i,
-  ];
-
-  return gameKeywords.some((keyword) => keyword.test(text));
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AUTONOMOUS GAME GENERATION
-// Generates games without user interaction (batch/background mode)
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function generateGameAutonomously(gameType: string = "2D Shooter"): Promise<string> {
-  "use server";
-  
-  const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
-  const CLAUDE_API_KEY = process.env.CLAUDE_API_KEY || "";
-
-  if (!OPENAI_API_KEY && !CLAUDE_API_KEY) {
-    throw new Error("No API keys configured for autonomous game generation");
-  }
-
-  // Load game examples
-  const gameExamples = loadGameExamples();
-  const gameExamplesContext = formatGameExamplesForContext(gameExamples);
-
-  // Build system prompt with game directives
-  const autonomousSystemPrompt = `You are an expert game developer. Your task is to autonomously generate a high-quality, complete game.
-
-Requirements:
-- Generate a full, production-ready ${gameType}
-- Include all game mechanics, UI, styling, and logic in a single HTML file
-- NO external files (embedded CSS and JavaScript only)
-- 400+ lines of polished code
-- Professional styling with animations
-
-${gameExamplesContext}`;
-
-  // Craft autonomous generation prompt
-  const autonomousMessages: Message[] = [
-    { 
-      role: "system", 
-      content: autonomousSystemPrompt 
-    },
-    { 
-      role: "user", 
-      content: `Generate a complete, production-ready ${gameType} game. Output ONLY the HTML code.` 
-    }
-  ];
-
-  // Create timestamp for tracking
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] Starting autonomous game generation: ${gameType}`);
-
-  try {
-    // Try Claude first if available
-    if (CLAUDE_API_KEY) {
-      const game = await callClaudeChat(autonomousMessages, {
-        temperature: 0.5,
-        maxTokens: 6000,
-      });
-      console.log(`[${timestamp}] Generated game via Claude: ${game.length} chars`);
-      return game;
-    } else {
-      // Fall back to OpenAI
-      const game = await callOpenAIChat(autonomousMessages, {
-        temperature: 0.5,
-        maxTokens: 6000,
-      });
-      console.log(`[${timestamp}] Generated game via OpenAI: ${game.length} chars`);
-      return game;
-    }
-  } catch (error) {
-    console.error(`[${timestamp}] Autonomous game generation failed:`, error);
-    throw new Error(`Failed to generate game: ${error instanceof Error ? error.message : "Unknown error"}`);
-  }
-}
-
-function mergeCalendarClarificationReply(originalRequest: string | null, followUp: string) {
-  if (!originalRequest) {
-    return followUp;
-  }
-
-  const trimmedFollowUp = followUp.trim();
-  if (!trimmedFollowUp) {
-    return originalRequest;
-  }
-
-  if (isTimeOnlyCalendarReply(trimmedFollowUp)) {
-    return `${originalRequest} at ${trimmedFollowUp}`;
-  }
-
-  return `${originalRequest} ${trimmedFollowUp}`;
-}
-
-function getTimeZoneOffsetString(date: Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    timeZoneName: "longOffset",
-    year: "numeric",
-  });
-  const parts = formatter.formatToParts(date);
-  const timeZoneName = parts.find((part) => part.type === "timeZoneName")?.value;
-
-  if (!timeZoneName || timeZoneName === "GMT") {
-    return "Z";
-  }
-
-  const match = timeZoneName.match(/^GMT([+-])(\d{1,2})(?::(\d{2}))?$/);
-  if (!match) {
-    return "Z";
-  }
-
-  const [, sign, hours, minutes] = match;
-  return `${sign}${hours.padStart(2, "0")}:${(minutes || "00").padStart(2, "0")}`;
-}
-
-function getTimeZoneDateParts(date: Date, timeZone: string) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "long",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const parts = formatter.formatToParts(date);
-
-  return {
-    weekday: parts.find((part) => part.type === "weekday")?.value.toLowerCase() || "",
-    year: Number(parts.find((part) => part.type === "year")?.value || "0"),
-    month: Number(parts.find((part) => part.type === "month")?.value || "0"),
-    day: Number(parts.find((part) => part.type === "day")?.value || "0"),
-  };
-}
-
-function addDaysInTimeZone(date: Date, timeZone: string, days: number) {
-  const shifted = new Date(date);
-  shifted.setUTCDate(shifted.getUTCDate() + days);
-  return getTimeZoneDateParts(shifted, timeZone);
-}
-
-function buildZonedIso(parts: { year: number; month: number; day: number }, hours: number, minutes: number, seconds: number, timeZone: string) {
-  const year = String(parts.year).padStart(4, "0");
-  const month = String(parts.month).padStart(2, "0");
-  const day = String(parts.day).padStart(2, "0");
-  const hour = String(hours).padStart(2, "0");
-  const minute = String(minutes).padStart(2, "0");
-  const second = String(seconds).padStart(2, "0");
-  const probe = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, Math.min(Math.max(hours, 0), 23), minutes, seconds));
-  const offset = getTimeZoneOffsetString(probe, timeZone);
-
-  return `${year}-${month}-${day}T${hour}:${minute}:${second}${offset}`;
-}
-
-function resolveCalendarDayRange(text: string, timeZone: string, now: Date, options?: { defaultToToday?: boolean }) {
-  const normalized = normalizeWhitespace(text).toLowerCase();
-  const weekdayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-  const current = getTimeZoneDateParts(now, timeZone);
-  const currentWeekdayIndex = weekdayNames.indexOf(current.weekday);
-
-  let label = "today";
-  let target = current;
-
-  if (/\bthis week\b/.test(normalized)) {
-    const daysFromMonday = currentWeekdayIndex === 0 ? 6 : currentWeekdayIndex - 1;
-    const weekStart = addDaysInTimeZone(now, timeZone, -daysFromMonday);
-    const weekEnd = addDaysInTimeZone(now, timeZone, 7 - daysFromMonday);
-
-    return {
-      label: "this week",
-      startIso: buildZonedIso(weekStart, 0, 0, 0, timeZone),
-      endIso: buildZonedIso(weekEnd, 0, 0, 0, timeZone),
-    };
-  }
-
-  if (/\bnext week\b/.test(normalized)) {
-    const daysFromMonday = currentWeekdayIndex === 0 ? 6 : currentWeekdayIndex - 1;
-    const nextWeekStart = addDaysInTimeZone(now, timeZone, 7 - daysFromMonday);
-    const nextWeekEnd = addDaysInTimeZone(now, timeZone, 14 - daysFromMonday);
-
-    return {
-      label: "next week",
-      startIso: buildZonedIso(nextWeekStart, 0, 0, 0, timeZone),
-      endIso: buildZonedIso(nextWeekEnd, 0, 0, 0, timeZone),
-    };
-  }
-
-  if (/\btomorrow\b/.test(normalized)) {
-    label = "tomorrow";
-    target = addDaysInTimeZone(now, timeZone, 1);
-  } else if (/\btoday\b|\btonight\b|\bcurrent(?:ly)?\b|\bright now\b|\bnow\b/.test(normalized)) {
-    label = "today";
-    target = current;
-  } else {
-    const weekdayMatch = normalized.match(/\b(?:(this|next)\s+)?(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
-    if (!weekdayMatch) {
-      if (options?.defaultToToday) {
-        return {
-          label,
-          startIso: buildZonedIso(target, 0, 0, 0, timeZone),
-          endIso: buildZonedIso(addDaysInTimeZone(new Date(Date.UTC(target.year, target.month - 1, target.day, 12, 0, 0)), timeZone, 1), 0, 0, 0, timeZone),
-        };
-      }
-
-      return null;
-    }
-
-    const modifier = weekdayMatch[1] || "this";
-    const requestedWeekday = weekdayMatch[2];
-    const requestedIndex = weekdayNames.indexOf(requestedWeekday);
-    if (requestedIndex === -1 || currentWeekdayIndex === -1) {
-      return null;
-    }
-
-    let delta = (requestedIndex - currentWeekdayIndex + 7) % 7;
-    if (modifier === "next") {
-      delta = delta === 0 ? 7 : delta;
-    }
-
-    target = addDaysInTimeZone(now, timeZone, delta);
-    label = modifier === "next" ? `next ${requestedWeekday}` : requestedWeekday;
-  }
-
-  const endTarget = addDaysInTimeZone(new Date(Date.UTC(target.year, target.month - 1, target.day, 12, 0, 0)), timeZone, 1);
-
-  return {
-    label,
-    startIso: buildZonedIso(target, 0, 0, 0, timeZone),
-    endIso: buildZonedIso(endTarget, 0, 0, 0, timeZone),
-  };
-}
-
-function formatLiveCalendarEventsMessage(
-  events: Array<{
-    title: string;
-    startIso: string | null;
-    endIso: string | null;
-    isAllDay: boolean;
-    location?: string | null;
-    htmlLink?: string | null;
-  }>,
-  label: string,
-  timeZone: string
-) {
-  if (events.length === 0) {
-    return `Your Google Calendar looks clear for ${label}.`;
-  }
-
-  const shouldShowDate = /week/.test(label);
-
-  const formattedEvents = events.map((event, index) => {
-    const lines: string[] = [`${index + 1}. **${event.title}**`];
-
-    if (!event.startIso) {
-      if (event.htmlLink) {
-        lines.push(`   Open: [Google Calendar](${event.htmlLink})`);
-      }
-      return lines.join("\n");
-    }
-
-    if (event.isAllDay) {
-      if (shouldShowDate) {
-        const start = new Date(event.startIso);
-        const dateFormatter = new Intl.DateTimeFormat("en-US", {
-          weekday: "long",
-          month: "long",
-          day: "numeric",
-          timeZone,
-        });
-        lines.push(`   When: ${dateFormatter.format(start)} · All day`);
-      } else {
-        lines.push("   Time: All day");
-      }
-    } else {
-      const start = new Date(event.startIso);
-      const end = event.endIso ? new Date(event.endIso) : null;
-      const timeFormatter = new Intl.DateTimeFormat("en-US", {
-        timeStyle: "short",
-        timeZone,
-      });
-      const dateFormatter = new Intl.DateTimeFormat("en-US", {
-        weekday: "long",
-        month: "long",
-        day: "numeric",
-        timeZone,
-      });
-
-      lines.push(
-        shouldShowDate
-          ? `   When: ${dateFormatter.format(start)} · ${timeFormatter.format(start)}${end ? ` to ${timeFormatter.format(end)}` : ""}`
-          : `   Time: ${timeFormatter.format(start)}${end ? ` to ${timeFormatter.format(end)}` : ""}`
-      );
-    }
-
-    if (event.location) {
-      lines.push(`   Location: ${event.location}`);
-    }
-
-    if (event.htmlLink) {
-      lines.push(`   Open: [Google Calendar](${event.htmlLink})`);
-    }
-
-    return lines.join("\n");
-  });
-
-  return `Here is your Google Calendar for ${label}:\n\n${formattedEvents.join("\n\n")}`;
-}
-
-function formatLiveCalendarDeleteConfirmation(
-  events: Array<{
-    title: string;
-    startIso: string | null;
-    endIso: string | null;
-    isAllDay: boolean;
-    location?: string | null;
-  }>,
-  label: string,
-  timeZone: string
-) {
-  return `${LIVE_CALENDAR_DELETE_MARKER}\n\nI found ${events.length} event${events.length === 1 ? "" : "s"} on ${label}:\n${events
-    .map((event) => {
-      if (!event.startIso) {
-        return `- ${event.title}`;
-      }
-
-      if (event.isAllDay) {
-        return `- ${event.title} (all day)`;
-      }
-
-      const start = new Date(event.startIso);
-      const end = event.endIso ? new Date(event.endIso) : null;
-      const formatter = new Intl.DateTimeFormat("en-US", {
-        timeStyle: "short",
-        timeZone,
-      });
-
-      return `- ${event.title} from ${formatter.format(start)}${end ? ` to ${formatter.format(end)}` : ""}${event.location ? ` at ${event.location}` : ""}`;
-    })
-    .join("\n")}\n\nReply with "yes" to delete them, or "no" to keep them.`;
-}
-
 export async function POST(request: NextRequest) {
   try {
     if (!OPENAI_API_KEY) {
@@ -1077,6 +155,7 @@ export async function POST(request: NextRequest) {
       voice = "alloy",
       timeZone = "UTC",
       sessionId = null,
+      assistantMode = "auto",
     } = await request.json();
 
     if (!messages || !Array.isArray(messages)) {
@@ -1127,6 +206,16 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      const memoryValidation = validateWithSchema(MemoryFactSchema, { content: memoryContent, kind: "explicit" });
+      if (!memoryValidation.ok) {
+        return NextResponse.json({
+          success: true,
+          message: `I couldn't save that memory: ${memoryValidation.issues.join("; ")}`,
+          audio: null,
+          validation: memoryValidation,
+        });
+      }
+
       const memorySave = await withOptionalPersistence(
         "Assistant memory save",
         async () => {
@@ -1146,7 +235,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (
-      previousAssistantAskedLiveDeleteConfirmation(messages) &&
+      previousAssistantAskedLiveDeleteConfirmation(messages, LIVE_CALENDAR_DELETE_MARKER) &&
       isCalendarConfirmationReply(latestUserMessage)
     ) {
       const originalDeleteRequest = getUserMessageBeforeLatestAssistant(messages);
@@ -1217,7 +306,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (
-      previousAssistantAskedLiveDeleteConfirmation(messages) &&
+      previousAssistantAskedLiveDeleteConfirmation(messages, LIVE_CALENDAR_DELETE_MARKER) &&
       isCancellationReply(latestUserMessage)
     ) {
       return NextResponse.json({
@@ -1700,232 +789,15 @@ ${previewRuntimeIssue.message.trim()}`
       userContext = `${previousContext.value}${longTermMemoryContext.value}${relevantAssistantMemoryContext}${relevantConversationContext}`;
     }
 
-    const systemPrompt = `You are Loco, an intelligent, calm, and highly capable AI assistant — modelled after JARVIS — who helps users with everyday needs while also teaching programming, debugging code, and helping build software.
-
-Your mission is to help users **understand problems, solve them, and grow their skills**.
-
-Always keep responses clear, concise, helpful, and encouraging.
-
-${userGreeting}
-${userContext}
-
-If the current message overlaps with remembered facts or relevant prior conversation context, naturally acknowledge that connection when it is genuinely useful. Keep it brief and accurate. Do not invent memory details.
-
-If the user asks to play a YouTube video or playlist, treat that as a direct media intent rather than a long-form explanation request. Prefer concise, action-oriented handling. Only ask a follow-up if the requested video, playlist, or topic is too vague to search safely.
-
-# 🎭 PERSONALITY
-
-You are:
-
-• Calm, precise, and analytically intelligent
-• A composed mentor who communicates with confidence and clarity
-• Measured and deliberate - never rushed or chaotic
-• Patient and thorough with beginners
-• Supportive when users feel stuck
-• Quietly passionate about elegant solutions
-
-Your tone is:
-
-**80% composed, analytical advisor**
-**20% dry wit and understated confidence**
-
-Address the user as "sir" when speaking directly, unless they explicitly ask you to use a different form of address.
-
-You speak in short, deliberate sentences. Never long paragraphs when brevity will do.
-
-You think in distinct ideas - one thought at a time.
-
-Occasionally narrate your process: "Analyzing the issue.", "Scanning the code.", "Compiling results."
-
-Use phrasing like: "It appears...", "Most likely...", "I recommend...", "The issue appears to be...", "That should resolve it."
-
-Sound confident, analytical, and composed at all times - like a trusted intelligent system.
-
-# SPEECH STYLE - JARVIS MODE
-
-When responding:
-- Use short, punchy sentences. One idea per sentence.
-- Avoid filler words. Be direct and precise.
-- Narrate complex work: "Running diagnostics.", "Cross-referencing the documentation."
-- Deliver conclusions calmly: "That confirms the issue.", "The fix is straightforward."
-- Acknowledge the user with quiet confidence: "Understood, sir.", "Noted, sir.", "Good question, sir."
-
-# 🧠 CORE TEACHING STYLE
-
-When explaining technical ideas:
-
-• Break concepts into simple steps
-• Avoid overwhelming walls of text
-• Use analogies (games, sports, cooking, real-world systems)
-• Highlight key ideas clearly
-• Focus on **WHY something works**, not just WHAT it does
-
-You are not just writing code.
-
-You are **building confidence and teaching users how to think like engineers**.
-
-Make technical concepts feel conquerable, not intimidating.
-
-# 🔍 THE WHY-FIRST RULE
-
-Whenever possible, clarify:
-
-• The problem being solved
-• The constraints involved
-• Why the chosen solution works
-• Trade-offs in the design
-
-Ask occasional reasoning questions such as:
-
-• “Why do you think this bug is happening?”
-• “What would break if this dependency changed?”
-• “Would this still work with 10,000 users?”
-
-These questions should encourage thinking without overwhelming the user.
-
-# 🏗 ARCHITECTURE AWARENESS
-
-When relevant, connect small code decisions to larger concepts such as:
-
-• Separation of concerns
-• Component responsibility
-• State management patterns
-• Performance considerations
-• Maintainability
-• Scalability
-• Readability vs cleverness
-
-Help the user understand that:
-
-**Small design decisions can have big long-term effects.**
-
-• Briefly explain what the code does
-• Mention where the code should go (file name or location)
-• Provide quick usage instructions if helpful
-
-Never repeat the same code outside the code block.
-
-# 🛠 WHEN A USER REQUESTS CODE
-
-Follow this process:
-
-1. If the request is unclear → ask clarifying questions
-2. Explain the approach briefly (1–2 sentences)
-3. Provide the complete code solution
-4. Mention file name or location
-5. Provide quick instructions for using or running the code
-
-Keep explanations short but informative.
-
-# 🔧 DEBUGGING PHILOSOPHY
-
-When helping debug code:
-
-1. Identify the root problem
-2. Explain **why it happens**
-3. Show how to fix it
-4. Suggest how to prevent it in the future
-
-You are not just fixing bugs.
-
-You are teaching users **how to hunt bugs themselves.**
-
-Treat bugs like villains in a story that must be defeated.
-
-# 🧪 LEARNING & EXPERIMENTATION
-
-Encourage curiosity and experimentation.
-
-Examples:
-
-• “Try changing this value and see what happens 👀”
-• “What happens if we remove this dependency?”
-• “Rewrite this without useEffect — what changes?”
-
-Learning improves when users **test ideas and observe outcomes.**
-
-# 🎪 INTERACTION STYLE
-
-Adapt your explanations to the user’s experience level.
-
-If the user seems confused:
-Slow down and simplify.
-
-If the user seems advanced:
-Increase depth and discuss architecture.
-
-If the user sounds frustrated:
-Acknowledge it and motivate them.
-
-Occasionally ask engaging prompts like:
-
-• “Do you want the quick version or the deep dive?”
-• “Want me to mentally diagram how this works?”
-• “Should we refactor this like pros?”
-
-Make conversations feel like a **live coding session**, not a documentation dump.
-
-# 🤪 PLAYFUL ENERGY
-
-You may occasionally add playful flair such as:
-
-“BOOM! That’s your state update.”
-
-However:
-
-• Clarity always comes first
-• Humor should never reduce technical accuracy
-• Keep jokes brief and supportive
-
-# 🔁 REPEATED QUESTIONS
-
-If a user repeats the same question multiple times:
-
-First repeat → friendly reminder
-Second repeat → explain in a different way
-Third repeat → increase playful energy while still helping
-
-Always keep answers useful while acknowledging the repetition.
-
-# 🎯 FEEDBACK STYLE
-
-When reviewing user code:
-
-1. Start by highlighting what works well
-2. Identify improvement areas
-3. Explain why the improvement matters
-4. Suggest a better version if needed
-5. Explain the benefit of the improvement
-
-Your goal is constructive growth.
-
-# 💻 TERMINAL COMMAND FORMAT
-
-When showing terminal commands, always format them like:
-
-$ npm install
-$ npm run dev
-
-# 🚀 ULTIMATE GOAL
-
-Your purpose is not just to solve problems.
-
-Your purpose is to:
-
-• Build user confidence
-• Teach reasoning and engineering thinking
-• Turn confusion into clarity
-• Turn mistakes into lessons
-
-You are:
-
-A coding hype squad.
-A debugging gladiator.
-A chaos-powered educator.
-A patient mentor.
-A structured thinker with wild energy.
-
-Make coding feel **alive, understandable, and achievable.**`;
+    const aiContext = await assembleStatelessAiContext({
+      promptName: "loco-system",
+      userGreeting,
+      userContext,
+      includeSchema: true,
+      includeRules: true,
+      includeToolSnapshots: true,
+    });
+    const systemPrompt = aiContext.systemPrompt;
 
     const recentMessages = messages.slice(-10).map((msg: { role: string; content: string }, index: number, source: Array<{ role: string; content: string }>) => {
       const isLatestUserMessage = index === source.length - 1 && msg.role === "user";
@@ -1965,47 +837,8 @@ Make coding feel **alive, understandable, and achievable.**`;
     }
 
     if (shouldGeneratePlanetTour) {
-      const planetTourInstruction = [
-        "When the user is asking for globe, earth, map, or planet navigation, append a hidden XML-style block labeled loco-tour after your normal answer.",
-        "The block must contain valid JSON only.",
-        "Use this schema:",
-        "<loco-tour>",
-        "{",
-        '  "mode": "planet",',
-        '  "title": "Short tour title",',
-        '  "fullscreen": true,',
-        '  "autoRotate": false,',
-        '  "steps": [',
-        "    {",
-        '      "type": "flyTo",',
-        '      "locationQuery": "Paris, France",',
-        '      "height": 1200000,',
-        '      "durationMs": 5000,',
-        '      "heading": 0,',
-        '      "pitch": -35,',
-        '      "roll": 0',
-        "    },",
-        "    {",
-        '      "type": "narrate",',
-        '      "text": "We are approaching Paris.",',
-        '      "durationMs": 1200',
-        "    },",
-        "    {",
-        '      "type": "orbit",',
-        '      "durationMs": 4000',
-        "    }",
-        "  ]",
-        "}",
-        "</loco-tour>",
-        "Rules:",
-        "- Use only these step types: narrate, flyTo, orbit, pause.",
-        "- Prefer flyTo steps with locationQuery values for places.",
-        "- Use latitude and longitude only when the user explicitly gave coordinates.",
-        "- Keep the visible answer natural and concise. The loco-tour block is for the client.",
-        "- If the request is about opening the planet view only, still provide a minimal planet tour block.",
-      ].join("\n");
-
-      finalSystemPrompt = `${finalSystemPrompt}\n\n${planetTourInstruction}`;
+      const planetTourPrompt = await getPrompt("planet-tour");
+      finalSystemPrompt = `${finalSystemPrompt}\n\n${planetTourPrompt.content}`;
     }
 
     const apiMessages: Message[] = [
@@ -2014,20 +847,27 @@ Make coding feel **alive, understandable, and achievable.**`;
       ...recentMessages,
     ];
 
-    // Use Claude for code/game if available, otherwise OpenAI
-    const useClaudeForCodeGame = (isCodeRequest || isGameRequest) && CLAUDE_API_KEY;
-    
+    const generationStartedAt = Date.now();
+    const routing = resolveAssistantRouting({
+      assistantMode,
+      latestUserMessage,
+      isCodeRequest,
+      isGameRequest,
+      claudeAvailable: Boolean(CLAUDE_API_KEY),
+    });
+
     let aiMessage: string;
-    
-    // For game/code requests, use higher token limits to generate full featured games
+    let routingFallbackReason: string | null = routing.fallbackReason ?? null;
+
     const tokenConfig = isGameRequest ? { temperature: 0.1, maxTokens: 8000 } : { temperature: 0.7, maxTokens: 1000 };
-    
-    if (useClaudeForCodeGame) {
+    const useClaude = routing.provider === "claude";
+
+    if (useClaude) {
       try {
         aiMessage = await callClaudeChat(apiMessages, tokenConfig);
       } catch (claudeError) {
-        // Silent fallback to OpenAI
         aiMessage = await callOpenAIChat(apiMessages, tokenConfig);
+        routingFallbackReason = "claude_error_fallback_openai";
       }
     } else {
       aiMessage = await callOpenAIChat(apiMessages, tokenConfig);
@@ -2075,7 +915,7 @@ Instructions:
 - If code is needed, provide the corrected complete code.
 - If the runtime error indicates the previous approach failed, replace it with a working one.`;
 
-      if (useClaudeForCodeGame) {
+      if (useClaude) {
         try {
           aiMessage = await callClaudeChat(
             [
@@ -2129,78 +969,9 @@ Instructions:
       });
     }
 
-    if (voice && aiMessage && TTS_PROVIDER !== "browser") {
-      try {
-        if (TTS_PROVIDER === "gemini") {
-          if (!GEMINI_API_KEY) {
-            console.error("Gemini API key not configured for TTS");
-          } else {
-            const voiceMap: { [key: string]: string } = {
-              alloy: "en-US-Neural2-A",
-              echo: "en-US-Neural2-C",
-              fable: "en-US-Neural2-E",
-            };
-            const googleVoiceName = voiceMap[voice] || "en-US-Neural2-C";
-
-            const ttsResponse = await fetch(
-              `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GEMINI_API_KEY}`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  input: { text: aiMessage },
-                  voice: {
-                    languageCode: "en-US",
-                    name: googleVoiceName,
-                  },
-                  audioConfig: {
-                    audioEncoding: "MP3",
-                    pitch: 0,
-                    speakingRate: 1.0,
-                  },
-                }),
-              }
-            );
-            if (ttsResponse.ok) {
-              const ttsData = await ttsResponse.json();
-              if (ttsData.audioContent) {
-                audioBase64 = ttsData.audioContent;
-                console.log("Google TTS audio generated successfully");
-              } else {
-                console.error("No audio content in response:", ttsData);
-              }
-            } else {
-              const errorData = await ttsResponse.text();
-              console.error("Google TTS error:", ttsResponse.status, errorData);
-            }
-          }
-        } else {
-          const ttsResponse = await fetchOpenAI("https://api.openai.com/v1/audio/speech", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${OPENAI_API_KEY}`,
-            },
-            body: JSON.stringify({
-              model: "tts-1",
-              input: aiMessage,
-              voice: voice,
-              response_format: "mp3",
-            }),
-          });
-          if (ttsResponse.ok) {
-            const audioBuffer = await ttsResponse.arrayBuffer();
-            const base64Audio = Buffer.from(audioBuffer).toString("base64");
-            audioBase64 = base64Audio;
-          } else {
-            console.error("OpenAI TTS API error:", ttsResponse.status, ttsResponse.statusText);
-          }
-        }
-      } catch (e) {
-        console.error("TTS error", e);
-      }
+    const audioFromProvider = await synthesizeSpeech(aiMessage, voice);
+    if (audioFromProvider) {
+      audioBase64 = audioFromProvider;
     }
 
     if (code && aiMessage) {
@@ -2213,6 +984,31 @@ Instructions:
       }
     }
 
+    await logAiInteraction({
+      model: (routingFallbackReason ? "openai" : routing.provider) === "claude"
+        ? "claude-3-5-sonnet-20241022"
+        : (process.env.OPENAI_MODEL || "gpt-4o-mini"),
+      promptName: aiContext.promptName,
+      promptVersion: aiContext.promptVersion,
+      schemaVersion: aiContext.schemaVersion,
+      rulesVersion: aiContext.rulesVersion,
+      temperature: tokenConfig.temperature,
+      userInput: latestUserMessage,
+      aiOutput: aiMessage,
+      validationResult: pipelineReview.approved ? "approved" : "needs_revision",
+      routingProvider: routingFallbackReason ? "openai" : routing.provider,
+      executionTimeMs: Date.now() - generationStartedAt,
+      success: true,
+      metadata: {
+        routing,
+        pipeline: {
+          approved: pipelineReview.approved,
+          matchesUserRequest: pipelineReview.matchesUserRequest,
+          worksLikely: pipelineReview.worksLikely,
+        },
+      },
+    });
+
     return NextResponse.json({
       success: true,
       message: aiMessage,
@@ -2220,6 +1016,21 @@ Instructions:
       memoryHit,
       memorySources,
       memoryMatches,
+      ai: {
+        promptName: aiContext.promptName,
+        promptVersion: aiContext.promptVersion,
+        schemaVersion: aiContext.schemaVersion,
+        rulesVersion: aiContext.rulesVersion,
+      },
+      routing: {
+        requestedAssistantMode: routing.requestedAssistantMode,
+        resolvedAssistantMode: routing.resolvedAssistantMode,
+        provider: routingFallbackReason ? "openai" : routing.provider,
+        fallbackReason: routingFallbackReason,
+        analysisSource: routing.analysisSource,
+        rationale: routing.rationale,
+        confidence: routing.confidence,
+      },
       pipeline: {
         approved: pipelineReview.approved,
         matchesUserRequest: pipelineReview.matchesUserRequest,
@@ -2245,3 +1056,4 @@ Instructions:
     );
   }
 }
+

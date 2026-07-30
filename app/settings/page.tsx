@@ -596,7 +596,7 @@ export default function SettingsPage() {
                       Active mode: <span className="font-medium text-foreground">{assistantModeLabels[assistantMode]}</span>
                     </p>
                     <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      Auto mode now uses a routing pipeline: OpenAI analyzes the latest prompt and available code context first, then the code engine receives implementation work while Loco keeps conceptual explanation requests.
+                      Auto mode routes on the server: code and game requests prefer Claude when configured, while explanation and general chat stay on Loco (OpenAI). Forced Loco or Claude modes honor your selection, with OpenAI fallback if Claude is unavailable.
                     </p>
                   </div>
                 </div>

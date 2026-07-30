@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { resolveIntegrationUserId } from "@/lib/assistant/appUser";
 import { deleteRememberedCalendarEventsByGoogleIds, rememberCalendarEvent } from "@/lib/chatMemory";
 import { isPersistenceUnavailableError } from "@/lib/persistence";
 import { prisma } from "@/lib/prisma";
@@ -38,9 +39,15 @@ export function getGoogleCalendarScopes() {
   return [...GOOGLE_CALENDAR_SCOPES];
 }
 
-export async function getStoredCalendarConnection() {
+export async function getStoredCalendarConnection(userId?: number | null) {
+  const resolvedUserId = await resolveIntegrationUserId(userId);
   return prisma.googleCalendarConnection.findUnique({
-    where: { provider: "google" },
+    where: {
+      userId_provider: {
+        userId: resolvedUserId,
+        provider: "google",
+      },
+    },
   });
 }
 
@@ -50,9 +57,16 @@ export async function saveCalendarConnection(params: {
   expiryDate?: number | null;
   scope?: string | null;
   email?: string | null;
+  userId?: number | null;
 }) {
+  const resolvedUserId = await resolveIntegrationUserId(params.userId);
   return prisma.googleCalendarConnection.upsert({
-    where: { provider: "google" },
+    where: {
+      userId_provider: {
+        userId: resolvedUserId,
+        provider: "google",
+      },
+    },
     update: {
       accessToken: params.accessToken,
       refreshToken: params.refreshToken ?? undefined,
@@ -61,6 +75,7 @@ export async function saveCalendarConnection(params: {
       email: params.email ?? null,
     },
     create: {
+      userId: resolvedUserId,
       provider: "google",
       accessToken: params.accessToken,
       refreshToken: params.refreshToken ?? null,
@@ -71,9 +86,13 @@ export async function saveCalendarConnection(params: {
   });
 }
 
-export async function deleteCalendarConnection() {
+export async function deleteCalendarConnection(userId?: number | null) {
+  const resolvedUserId = await resolveIntegrationUserId(userId);
   await prisma.googleCalendarConnection.deleteMany({
-    where: { provider: "google" },
+    where: {
+      userId: resolvedUserId,
+      provider: "google",
+    },
   });
 }
 

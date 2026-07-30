@@ -1,0 +1,711 @@
+{
+  "version": "schema-ee130ca2",
+  "generatedAt": "2026-07-30T16:21:27.708Z",
+  "sourceHash": "ee130ca2d4c10d3a8d6f20b5e6a2bba9d4544fa752d19b47f7cf1ffbf630f997",
+  "tables": [
+    {
+      "name": "User",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "email",
+          "type": "String"
+        },
+        {
+          "name": "name",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "googleCalendarConnections",
+          "type": "GoogleCalendarConnection[]"
+        },
+        {
+          "name": "youTubeConnections",
+          "type": "YouTubeConnection[]"
+        }
+      ]
+    },
+    {
+      "name": "GoogleCalendarConnection",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "userId",
+          "type": "Int"
+        },
+        {
+          "name": "provider",
+          "type": "String"
+        },
+        {
+          "name": "email",
+          "type": "String?"
+        },
+        {
+          "name": "accessToken",
+          "type": "String"
+        },
+        {
+          "name": "refreshToken",
+          "type": "String?"
+        },
+        {
+          "name": "expiryDate",
+          "type": "BigInt?"
+        },
+        {
+          "name": "scope",
+          "type": "String?"
+        },
+        {
+          "name": "calendarId",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "user",
+          "type": "User"
+        }
+      ]
+    },
+    {
+      "name": "YouTubeConnection",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "userId",
+          "type": "Int"
+        },
+        {
+          "name": "provider",
+          "type": "String"
+        },
+        {
+          "name": "email",
+          "type": "String?"
+        },
+        {
+          "name": "channelId",
+          "type": "String?"
+        },
+        {
+          "name": "channelTitle",
+          "type": "String?"
+        },
+        {
+          "name": "accessToken",
+          "type": "String"
+        },
+        {
+          "name": "refreshToken",
+          "type": "String?"
+        },
+        {
+          "name": "expiryDate",
+          "type": "BigInt?"
+        },
+        {
+          "name": "scope",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "user",
+          "type": "User"
+        }
+      ]
+    },
+    {
+      "name": "PendingCalendarDraft",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "source",
+          "type": "String"
+        },
+        {
+          "name": "title",
+          "type": "String"
+        },
+        {
+          "name": "description",
+          "type": "String?"
+        },
+        {
+          "name": "location",
+          "type": "String?"
+        },
+        {
+          "name": "startIso",
+          "type": "DateTime"
+        },
+        {
+          "name": "endIso",
+          "type": "DateTime"
+        },
+        {
+          "name": "timeZone",
+          "type": "String"
+        },
+        {
+          "name": "needsConfirmation",
+          "type": "Boolean"
+        },
+        {
+          "name": "rawRequest",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "name": "ConversationSession",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "source",
+          "type": "String"
+        },
+        {
+          "name": "title",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "messages",
+          "type": "ConversationMessage[]"
+        },
+        {
+          "name": "calendarEvents",
+          "type": "CalendarEventMemory[]"
+        }
+      ]
+    },
+    {
+      "name": "ConversationMessage",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "sessionId",
+          "type": "String"
+        },
+        {
+          "name": "role",
+          "type": "String"
+        },
+        {
+          "name": "content",
+          "type": "String"
+        },
+        {
+          "name": "position",
+          "type": "Int"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "session",
+          "type": "ConversationSession"
+        }
+      ]
+    },
+    {
+      "name": "CalendarEventMemory",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "source",
+          "type": "String"
+        },
+        {
+          "name": "googleEventId",
+          "type": "String?"
+        },
+        {
+          "name": "sessionId",
+          "type": "String?"
+        },
+        {
+          "name": "title",
+          "type": "String"
+        },
+        {
+          "name": "description",
+          "type": "String?"
+        },
+        {
+          "name": "location",
+          "type": "String?"
+        },
+        {
+          "name": "startIso",
+          "type": "DateTime"
+        },
+        {
+          "name": "endIso",
+          "type": "DateTime"
+        },
+        {
+          "name": "timeZone",
+          "type": "String"
+        },
+        {
+          "name": "htmlLink",
+          "type": "String?"
+        },
+        {
+          "name": "rawRequest",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "session",
+          "type": "ConversationSession?"
+        }
+      ]
+    },
+    {
+      "name": "AssistantMemory",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "source",
+          "type": "String"
+        },
+        {
+          "name": "kind",
+          "type": "String"
+        },
+        {
+          "name": "content",
+          "type": "String"
+        },
+        {
+          "name": "normalizedContent",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "name": "WorkforceMember",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "name",
+          "type": "String"
+        },
+        {
+          "name": "email",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "assessments",
+          "type": "WorkforceAssessment[]"
+        }
+      ]
+    },
+    {
+      "name": "WorkforceArea",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "code",
+          "type": "String"
+        },
+        {
+          "name": "title",
+          "type": "String"
+        },
+        {
+          "name": "description",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "competencies",
+          "type": "WorkforceCompetency[]"
+        }
+      ]
+    },
+    {
+      "name": "WorkforceCompetency",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "code",
+          "type": "String"
+        },
+        {
+          "name": "title",
+          "type": "String"
+        },
+        {
+          "name": "itemType",
+          "type": "String"
+        },
+        {
+          "name": "question",
+          "type": "String?"
+        },
+        {
+          "name": "description",
+          "type": "String?"
+        },
+        {
+          "name": "sortOrder",
+          "type": "Int"
+        },
+        {
+          "name": "areaId",
+          "type": "Int?"
+        },
+        {
+          "name": "parentId",
+          "type": "Int?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "area",
+          "type": "WorkforceArea?"
+        },
+        {
+          "name": "parent",
+          "type": "WorkforceCompetency?"
+        },
+        {
+          "name": "children",
+          "type": "WorkforceCompetency[]"
+        },
+        {
+          "name": "rubricLevels",
+          "type": "WorkforceRubricLevel[]"
+        },
+        {
+          "name": "assessments",
+          "type": "WorkforceAssessment[]"
+        }
+      ]
+    },
+    {
+      "name": "WorkforceRubricLevel",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "competencyId",
+          "type": "Int"
+        },
+        {
+          "name": "score",
+          "type": "Int"
+        },
+        {
+          "name": "sortOrder",
+          "type": "Int"
+        },
+        {
+          "name": "summary",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "competency",
+          "type": "WorkforceCompetency"
+        }
+      ]
+    },
+    {
+      "name": "WorkforceAssessment",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "memberId",
+          "type": "Int"
+        },
+        {
+          "name": "competencyId",
+          "type": "Int"
+        },
+        {
+          "name": "assessmentDate",
+          "type": "DateTime"
+        },
+        {
+          "name": "selfScore",
+          "type": "Int?"
+        },
+        {
+          "name": "reflection",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "member",
+          "type": "WorkforceMember"
+        },
+        {
+          "name": "competency",
+          "type": "WorkforceCompetency"
+        },
+        {
+          "name": "evidenceLinks",
+          "type": "WorkforceEvidenceLink[]"
+        }
+      ]
+    },
+    {
+      "name": "WorkforceEvidenceLink",
+      "fields": [
+        {
+          "name": "id",
+          "type": "Int"
+        },
+        {
+          "name": "assessmentId",
+          "type": "Int"
+        },
+        {
+          "name": "label",
+          "type": "String?"
+        },
+        {
+          "name": "url",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "assessment",
+          "type": "WorkforceAssessment"
+        }
+      ]
+    },
+    {
+      "name": "Prompt",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "name",
+          "type": "String"
+        },
+        {
+          "name": "version",
+          "type": "Int"
+        },
+        {
+          "name": "content",
+          "type": "String"
+        },
+        {
+          "name": "isActive",
+          "type": "Boolean"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        },
+        {
+          "name": "updatedAt",
+          "type": "DateTime"
+        }
+      ]
+    },
+    {
+      "name": "AiInteractionLog",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "model",
+          "type": "String"
+        },
+        {
+          "name": "promptName",
+          "type": "String?"
+        },
+        {
+          "name": "promptVersion",
+          "type": "Int?"
+        },
+        {
+          "name": "schemaVersion",
+          "type": "String?"
+        },
+        {
+          "name": "rulesVersion",
+          "type": "String?"
+        },
+        {
+          "name": "temperature",
+          "type": "Float?"
+        },
+        {
+          "name": "userInput",
+          "type": "String"
+        },
+        {
+          "name": "aiOutput",
+          "type": "String?"
+        },
+        {
+          "name": "validationResult",
+          "type": "String?"
+        },
+        {
+          "name": "routingProvider",
+          "type": "String?"
+        },
+        {
+          "name": "executionTimeMs",
+          "type": "Int"
+        },
+        {
+          "name": "success",
+          "type": "Boolean"
+        },
+        {
+          "name": "errorMessage",
+          "type": "String?"
+        },
+        {
+          "name": "metadata",
+          "type": "String?"
+        },
+        {
+          "name": "createdAt",
+          "type": "DateTime"
+        }
+      ]
+    }
+  ]
+}

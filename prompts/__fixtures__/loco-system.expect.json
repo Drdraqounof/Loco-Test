@@ -1,0 +1,9 @@
+{
+  "promptName": "loco-system",
+  "expectedSubstrings": [
+    "You are Loco",
+    "WHY-FIRST RULE",
+    "{{userGreeting}}",
+    "{{userContext}}"
+  ]
+}

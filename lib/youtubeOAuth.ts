@@ -1,4 +1,5 @@
 import { google } from "googleapis";
+import { resolveIntegrationUserId } from "@/lib/assistant/appUser";
 import { prisma } from "@/lib/prisma";
 
 // In plain terms: this file handles YouTube sign-in and token storage for the app.
@@ -36,9 +37,15 @@ export function getYouTubeScopes() {
   return [...YOUTUBE_READONLY_SCOPES];
 }
 
-export async function getStoredYouTubeConnection() {
+export async function getStoredYouTubeConnection(userId?: number | null) {
+  const resolvedUserId = await resolveIntegrationUserId(userId);
   return prisma.youTubeConnection.findUnique({
-    where: { provider: "youtube" },
+    where: {
+      userId_provider: {
+        userId: resolvedUserId,
+        provider: "youtube",
+      },
+    },
   });
 }
 
@@ -50,9 +57,16 @@ export async function saveYouTubeConnection(params: {
   email?: string | null;
   channelId?: string | null;
   channelTitle?: string | null;
+  userId?: number | null;
 }) {
+  const resolvedUserId = await resolveIntegrationUserId(params.userId);
   return prisma.youTubeConnection.upsert({
-    where: { provider: "youtube" },
+    where: {
+      userId_provider: {
+        userId: resolvedUserId,
+        provider: "youtube",
+      },
+    },
     update: {
       accessToken: params.accessToken,
       refreshToken: params.refreshToken ?? undefined,
@@ -63,6 +77,7 @@ export async function saveYouTubeConnection(params: {
       channelTitle: params.channelTitle ?? null,
     },
     create: {
+      userId: resolvedUserId,
       provider: "youtube",
       accessToken: params.accessToken,
       refreshToken: params.refreshToken ?? null,
@@ -75,9 +90,13 @@ export async function saveYouTubeConnection(params: {
   });
 }
 
-export async function deleteYouTubeConnection() {
+export async function deleteYouTubeConnection(userId?: number | null) {
+  const resolvedUserId = await resolveIntegrationUserId(userId);
   await prisma.youTubeConnection.deleteMany({
-    where: { provider: "youtube" },
+    where: {
+      userId: resolvedUserId,
+      provider: "youtube",
+    },
   });
 }
 
